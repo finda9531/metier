@@ -7,6 +7,10 @@ namespace eep.editer1
     public class CursorInputState
     {
         private long lastInputTime = 0;
+
+        // ★追加: 最後のマウスクリック時間を記録する変数
+        private long lastMouseClickTime = 0;
+
         public Keys LastKeyDown { get; private set; } = Keys.None;
 
         public bool IsImeComposing(IntPtr hWnd)
@@ -35,10 +39,23 @@ namespace eep.editer1
             lastInputTime = DateTime.Now.Ticks / 10000;
         }
 
+        // ★追加: マウスをクリックした時に呼ぶメソッド
+        public void RegisterMouseClick()
+        {
+            lastMouseClickTime = DateTime.Now.Ticks / 10000;
+        }
+
         public long GetMillisecondsSinceLastInput()
         {
             long now = DateTime.Now.Ticks / 10000;
             return now - lastInputTime;
+        }
+
+        // ★追加: 最後のクリックからの経過時間を取得するメソッド
+        public long GetMillisecondsSinceLastClick()
+        {
+            long now = DateTime.Now.Ticks / 10000;
+            return now - lastMouseClickTime;
         }
 
         public bool IsDeleting()
