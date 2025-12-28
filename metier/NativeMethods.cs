@@ -29,11 +29,17 @@ namespace eep.editer1
         [DllImport("dwmapi.dll", PreserveSig = false)]
         public static extern void DwmGetColorizationColor(out int pcrColorization, out bool pfOpaqueBlend);
 
-        // --- ★追加: タイマー精度変更用 (165Hz対応に必須) ---
+        // --- タイマー精度変更用 ---
         [DllImport("winmm.dll")]
         public static extern uint timeBeginPeriod(uint uPeriod);
 
         [DllImport("winmm.dll")]
         public static extern uint timeEndPeriod(uint uPeriod);
+
+        // --- ★追加: 描画停止/再開用 (WM_SETREDRAW) ---
+        public const int WM_SETREDRAW = 0x000B;
+
+        [DllImport("user32.dll")]
+        public static extern int SendMessage(IntPtr hWnd, int wMsg, int wParam, int lParam);
     }
 }

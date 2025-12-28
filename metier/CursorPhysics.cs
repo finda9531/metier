@@ -6,7 +6,7 @@ namespace eep.editer1
 {
     public class CursorPhysics
     {
-        // 既存の定数（入力時の挙動用）
+        // --- 入力時（タイピング）用の物理定数 ---
         private const float Y_SMOOTH = 0.3f;
         private const float X_TENSION = 0.15f;
         private const float RAPID_TENSION = 0.02f;
@@ -16,91 +16,91 @@ namespace eep.editer1
         private const float SNAP_THRESHOLD = 0.5f;
         private const float STOP_VELOCITY = 0.5f;
 
-        // ★クリック移動用の定数（ここだけ新設）
-        // クリック時は少しキビキビ動かすために強めの設定にします
-        private const float CLICK_TENSION = 0.25f;
-        private const float CLICK_FRICTION = 0.70f;
+        // --
+        // 追従性: 0.2 -> 0.3 (少しキビキビさせて、無駄な広がりを抑える)
+        private const float LIQUID_FOLLOW_FACTOR = 0.2f;
 
+        // 膨張率: 0.4 -> 0.3 (太くなりすぎないように抑える)
+        private const float LIQUID_WIDTH_GAIN = 0.3f;
+
+        private const float BASE_WIDTH = 2.0f;
+
+        // --- カーソル座標 ---
         public float PosX { get; private set; }
         public float PosY { get; private set; }
+
+        // --- 液体シミュレーション用変数 ---
+        private float _liquidX;
+        public float CurrentWidth { get; private set; } = BASE_WIDTH;
+
         private float velX = 0;
-        private float velY = 0; // クリック移動のY軸用に追加
         private float maxTargetX = 0;
 
-        // ★クリック移動モードかどうかのフラグ
-        private bool _isClickMoveMode = false;
+        // --- アニメーション用変数 ---
+        private bool _isAnimationMode = false;
+        private bool _preserveAnimationOnTyping = false;
+        private float _animStartX;
+        private float _animStartY;
+        private float _animTargetX;
+        private float _animTargetY;
+        private float _animTimeCurrent;
 
-        // ★マウスでクリックしたときに呼ぶメソッド
-        public void NotifyMouseDown(Point newTargetPos)
+        public float AnimationDuration { get; set; } = 250.0f;
+
+        public CursorPhysics()
         {
-            // リミッターを解除して新しい場所をセット
-            maxTargetX = newTargetPos.X;
-            _isClickMoveMode = true;
+            _liquidX = 0;
+            CurrentWidth = BASE_WIDTH;
+        }
 
-            // 速度をリセット（変な慣性を消す）
+        public void StartAnimation(Point newTargetPos, bool isLineJump = false)
+        {
+            _animStartX = PosX;
+            _animStartY = PosY;
+            _animTargetX = newTargetPos.X;
+            _animTargetY = newTargetPos.Y;
+            _animTimeCurrent = 0;
+
+            _isAnimationMode = true;
+            _preserveAnimationOnTyping = isLineJump;
+
             velX = 0;
-            velY = 0;
+            maxTargetX = newTargetPos.X;
         }
 
         public void Update(Point realTargetPos, bool isTyping, bool isDeleting, float ratchetThreshold, float deltaTime, float charWidthLimit, bool isComposing, long elapsedInput)
         {
-            // タイピングが始まったら、即座に「いつもの入力モード」に戻す
-            if (isTyping)
+            if (_liquidX == 0 && PosX != 0) _liquidX = PosX;
+
+            if (isTyping && !_preserveAnimationOnTyping)
             {
-                _isClickMoveMode = false;
+                _isAnimationMode = false;
             }
 
-            // =========================================================
-            // 分岐: クリック移動モード or いつもの入力モード
-            // =========================================================
-            if (_isClickMoveMode)
+            if (_isAnimationMode)
             {
-                // ★A. クリック時の挙動 (XもYもバネで素直に移動)
-                // -----------------------------------------------------
+                _animTimeCurrent += deltaTime * 10.0f;
+                float progress = _animTimeCurrent / AnimationDuration;
 
-                // --- X軸の計算 ---
-                float diffX = realTargetPos.X - PosX;
-                if (Math.Abs(diffX) < SNAP_THRESHOLD && Math.Abs(velX) < STOP_VELOCITY)
+                if (progress >= 1.0f)
                 {
-                    PosX = realTargetPos.X;
-                    velX = 0;
+                    PosX = _animTargetX;
+                    PosY = _animTargetY;
+                    _isAnimationMode = false;
+                    _preserveAnimationOnTyping = false;
                 }
                 else
                 {
-                    // ラチェット(リミッター)なしで、前後左右にスムーズに動く
-                    float forceX = diffX * CLICK_TENSION;
-                    velX += forceX * deltaTime;
-                    velX *= (float)Math.Pow(CLICK_FRICTION, deltaTime);
-                    PosX += velX * deltaTime;
-                }
+                    float t = 1.0f - progress;
+                    float ease = 1.0f - (t * t * t * t);
 
-                // --- Y軸の計算 ---
-                float diffY = realTargetPos.Y - PosY;
-                if (Math.Abs(diffY) < SNAP_THRESHOLD && Math.Abs(velY) < STOP_VELOCITY)
-                {
-                    PosY = realTargetPos.Y;
-                    velY = 0;
-                }
-                else
-                {
-                    // Y_SMOOTH ではなくバネ計算を使って、X軸と同期して斜めに動くようにする
-                    float forceY = diffY * CLICK_TENSION;
-                    velY += forceY * deltaTime;
-                    velY *= (float)Math.Pow(CLICK_FRICTION, deltaTime);
-                    PosY += velY * deltaTime;
-                }
-
-                // ターゲットに到達したらモード終了
-                if (PosX == realTargetPos.X && PosY == realTargetPos.Y)
-                {
-                    _isClickMoveMode = false;
+                    PosX = _animStartX + (_animTargetX - _animStartX) * ease;
+                    PosY = _animStartY + (_animTargetY - _animStartY) * ease;
                 }
             }
             else
             {
-                // ★B. いつもの入力モード (ご提示いただいたコードそのまま)
-                // -----------------------------------------------------
-
+                // いつもの入力モード
                 float effectiveTargetX = realTargetPos.X;
 
                 if (isTyping && !isDeleting)
@@ -127,13 +127,11 @@ namespace eep.editer1
                     effectiveTargetX = realTargetPos.X;
                 }
 
-                // 元のY軸移動 (線形補間)
                 PosY += (realTargetPos.Y - PosY) * Y_SMOOTH * deltaTime;
 
                 float diffX = effectiveTargetX - PosX;
                 float diffY = Math.Abs(realTargetPos.Y - PosY);
 
-                // 元のロジック: Yの差が大きいときはXをゆっくり動かす
                 if (diffY > 5.0f)
                 {
                     PosX += diffX * 0.3f * deltaTime;
@@ -171,6 +169,23 @@ namespace eep.editer1
                     velX *= (float)Math.Pow(friction, deltaTime);
                     PosX += velX * deltaTime;
                 }
+            }
+
+            // 液体シミュレーション (1次遅れ系)
+            float followFactor = LIQUID_FOLLOW_FACTOR * deltaTime;
+            if (followFactor > 1.0f) followFactor = 1.0f;
+
+            _liquidX += (PosX - _liquidX) * followFactor;
+
+            float diffLiquid = PosX - _liquidX;
+            float extraWidth = Math.Abs(diffLiquid) * LIQUID_WIDTH_GAIN;
+
+            CurrentWidth = BASE_WIDTH + extraWidth;
+
+            if (Math.Abs(diffLiquid) < 0.1f)
+            {
+                _liquidX = PosX;
+                CurrentWidth = BASE_WIDTH;
             }
         }
     }

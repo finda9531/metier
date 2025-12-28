@@ -30,7 +30,6 @@ namespace eep.editer1
             };
         }
 
-        // ★修正: 戻り値を int (適用された高さ) に変更。何もしなければ 0 を返す。
         public int HandleShiftKeyUp()
         {
             long now = DateTime.Now.Ticks / 10000;
@@ -46,7 +45,6 @@ namespace eep.editer1
             return appliedHeight;
         }
 
-        // ★修正: 戻り値を int に変更
         private int ApplyHeadingLogic()
         {
             int caretPos = _richTextBox.SelectionStart;
@@ -61,8 +59,8 @@ namespace eep.editer1
 
                 _richTextBox.Select(startPos, length);
 
-                // フォント切り替え＆高さ取得
-                Font newFont = ToggleCurrentSelectionFont();
+                // ★変更: トグルではなく「強制的に大きくする」
+                Font newFont = EnlargeCurrentSelectionFont();
 
                 // 見出し化（大きい文字）になった場合、その高さを記録
                 if (newFont.Size >= 20)
@@ -72,13 +70,15 @@ namespace eep.editer1
 
                 // 選択解除して末尾へ。入力用フォントは標準に戻す
                 _richTextBox.Select(caretPos, 0);
+
+                // ここで入力用フォントを標準に戻すかは議論の余地ありだが、
+                // 「見出しを書いた後は本文」という流れなら戻すのが自然。
                 _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
             }
             else
             {
-                // これから書く文字のサイズを切り替える
-                Font newFont = ToggleCurrentSelectionFont();
-                // 切り替え後のフォント高さを返す
+                // これから書く文字のサイズを大きくする
+                Font newFont = EnlargeCurrentSelectionFont();
                 resultHeight = newFont.Height;
             }
 
@@ -86,18 +86,11 @@ namespace eep.editer1
             return resultHeight;
         }
 
-        // ★修正: 変更後のフォントを返すように変更
-        private Font ToggleCurrentSelectionFont()
+        // ★変更: 名前を変更し、ロジックを「大きくするだけ」に変更
+        private Font EnlargeCurrentSelectionFont()
         {
-            Font currentFont = _richTextBox.SelectionFont;
-            bool isHeading = (currentFont != null && currentFont.Size >= 20);
-
-            Font newFont;
-            if (isHeading)
-                newFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
-            else
-                newFont = new Font(FONT_FAMILY, FONT_SIZE_HEADING, FontStyle.Bold);
-
+            // 既に大きくても、改めて大きいフォントを設定する（副作用はないため安全）
+            Font newFont = new Font(FONT_FAMILY, FONT_SIZE_HEADING, FontStyle.Bold);
             _richTextBox.SelectionFont = newFont;
             return newFont;
         }
@@ -110,10 +103,15 @@ namespace eep.editer1
                 int currentPos = _richTextBox.SelectionStart;
                 if (currentPos >= 2)
                 {
+                    // スペース2回押しでリセット機能
                     _richTextBox.Select(currentPos - 2, 2);
+
+                    // ★ここが「戻す」役割になる
                     ResetColorToBlack();
                     ResetToNormalFont();
+
                     _richTextBox.SelectedText = " ";
+
                     ResetColorToBlack();
                     ResetToNormalFont();
                 }
@@ -122,6 +120,7 @@ namespace eep.editer1
             else _lastSpaceReleaseTime = now;
         }
 
+        // ... 以下、既存メソッドは変更なし ...
         private int GetChunkStartPosition(int caretPos)
         {
             int startPos = caretPos;
@@ -177,11 +176,8 @@ namespace eep.editer1
 
         public void ResetToNormalFont()
         {
-            Font currentFont = _richTextBox.SelectionFont;
-            if (currentFont != null && currentFont.Size >= 20)
-            {
-                _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
-            }
+            // 無条件で標準に戻す
+            _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
         }
 
         public void ResetColorToBlack()
