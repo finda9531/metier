@@ -13,14 +13,11 @@ namespace eep.editer1
         private long _lastShiftReleaseTime = 0;
         private long _lastSpaceReleaseTime = 0;
 
-        // 色辞書データ
         private readonly Dictionary<string, Color> _colorDictionary = new Dictionary<string, Color>();
-        // パフォーマンス用: 長い順にソート済みのキーリスト
         private readonly List<string> _sortedColorKeys;
-        // 色判定用の標準カテゴリ（着地点）
+        private readonly Dictionary<string, Func<Color, Color>> _modifiers = new Dictionary<string, Func<Color, Color>>();
         private readonly List<(string Name, Color Color)> _standardCategories = new List<(string, Color)>();
 
-        // 定数
         private const int DOUBLE_TAP_SPEED = 600;
         private const string FONT_FAMILY = "Meiryo UI";
         private const float FONT_SIZE_NORMAL = 14;
@@ -30,20 +27,12 @@ namespace eep.editer1
         {
             _richTextBox = richTextBox;
 
-            // 色データの初期化
             InitializeColorClassifier();
+            InitializeModifiers();
 
-            // キーワード検索用に、キーを「長い順」にソートしてキャッシュしておく
             _sortedColorKeys = _colorDictionary.Keys.OrderByDescending(k => k.Length).ToList();
         }
 
-        // =========================================================
-        //  公開メソッド (イベントハンドラ)
-        // =========================================================
-
-        /// <summary>
-        /// Shiftキー連打時の処理（見出し化）
-        /// </summary>
         public int HandleShiftKeyUp()
         {
             long now = DateTime.Now.Ticks / 10000;
@@ -59,9 +48,6 @@ namespace eep.editer1
             return appliedHeight;
         }
 
-        /// <summary>
-        /// Spaceキー連打時の処理（リセット）
-        /// </summary>
         public void HandleSpaceKeyUp()
         {
             long now = DateTime.Now.Ticks / 10000;
@@ -70,12 +56,9 @@ namespace eep.editer1
                 int currentPos = _richTextBox.SelectionStart;
                 if (currentPos >= 2)
                 {
-                    // 直前のスペースごとリセット
                     _richTextBox.Select(currentPos - 2, 2);
                     ResetSelectionStyle();
-
                     _richTextBox.SelectedText = " ";
-
                     ResetSelectionStyle();
                 }
                 _lastSpaceReleaseTime = 0;
@@ -83,23 +66,17 @@ namespace eep.editer1
             else _lastSpaceReleaseTime = now;
         }
 
-        /// <summary>
-        /// Tabキー押下時の色変更処理
-        /// </summary>
         public bool ToggleColor(bool keepTriggerWord)
         {
             int caretPos = _richTextBox.SelectionStart;
             if (caretPos == 0) return false;
 
-            // 1. キーワードを探す範囲を特定（空白区切りで遡る）
             int searchStart = GetTriggerChunkStart(caretPos);
-            if (searchStart >= caretPos) return false;
-
             string chunkText = _richTextBox.Text.Substring(searchStart, caretPos - searchStart);
+
             string matchedKey = null;
             string matchedInput = null;
 
-            // 2. キャッシュ済みのソート済みキーリストを使って最長一致検索
             foreach (var key in _sortedColorKeys)
             {
                 if (chunkText.EndsWith(key))
@@ -118,44 +95,50 @@ namespace eep.editer1
 
             if (matchedKey != null)
             {
-                ApplyColorLogic(caretPos, matchedInput, keepTriggerWord);
+                string prefix = chunkText.Substring(0, chunkText.Length - matchedInput.Length);
+                Color baseColor = GetBaseColorFromKey(matchedKey);
+                Color finalColor = ApplyModifier(baseColor, prefix, out int modLength);
+
+                if (modLength > 0)
+                {
+                    matchedInput = prefix.Substring(prefix.Length - modLength) + matchedInput;
+                }
+
+                Color targetColor;
+                if (modLength > 0)
+                {
+                    targetColor = finalColor;
+                }
+                else
+                {
+                    targetColor = IdentifyCategoryColor(matchedKey);
+                }
+
+                ApplyColorLogic(caretPos, matchedInput, targetColor, keepTriggerWord);
                 return true;
             }
 
             return false;
         }
 
-        // =========================================================
-        //  内部ロジック (スタイル適用)
-        // =========================================================
-
-        private void ApplyColorLogic(int caretPos, string matchedInput, bool keepTriggerWord)
+        private void ApplyColorLogic(int caretPos, string matchedInput, Color targetColor, bool keepTriggerWord)
         {
-            // キーワードの開始位置
             int keywordStartPos = caretPos - matchedInput.Length;
-
-            // Pattern A/B 判定: キーワードの直前が「行頭」または「空白」なら書き始めモード(B)
             bool isPatternB = (keywordStartPos == 0) || char.IsWhiteSpace(_richTextBox.Text[keywordStartPos - 1]);
-
-            Color targetColor = IdentifyCategoryColor(matchedInput);
 
             if (isPatternB)
             {
-                // 【Pattern B】書き始めモード（カーソル色変更のみ）
                 if (!keepTriggerWord)
                 {
                     _richTextBox.Select(keywordStartPos, matchedInput.Length);
                     _richTextBox.SelectedText = "";
                 }
 
-                // カーソル色をトグル
                 bool isAlreadyTargetColor = (_richTextBox.SelectionColor.ToArgb() == targetColor.ToArgb());
                 _richTextBox.SelectionColor = isAlreadyTargetColor ? Color.Black : targetColor;
             }
             else
             {
-                // 【Pattern A】直前の文を塗るモード
-                // 句読点を考慮して塗る範囲を計算
                 int rangeStart = GetColorRangeStart(keywordStartPos);
                 int modifyLength = keywordStartPos - rangeStart;
 
@@ -171,7 +154,6 @@ namespace eep.editer1
                     bool isAlreadyTargetColor = (_richTextBox.SelectionColor.ToArgb() == targetColor.ToArgb());
                     _richTextBox.SelectionColor = isAlreadyTargetColor ? Color.Black : targetColor;
 
-                    // 完了後は黒に戻す
                     _richTextBox.Select(rangeStart + modifyLength, 0);
                     _richTextBox.SelectionColor = Color.Black;
                 }
@@ -183,7 +165,6 @@ namespace eep.editer1
         private int ApplyHeadingLogic()
         {
             int caretPos = _richTextBox.SelectionStart;
-            // 直前が文字なら「その文字」を、そうでなければ「これから打つ文字」を変更
             bool isAfterCharacter = caretPos > 0 && !char.IsWhiteSpace(_richTextBox.Text[caretPos - 1]);
             int resultHeight = 0;
 
@@ -204,14 +185,9 @@ namespace eep.editer1
                 Font newFont = ToggleCurrentSelectionFont();
                 resultHeight = newFont.Height;
             }
-
             _richTextBox.Focus();
             return resultHeight;
         }
-
-        // =========================================================
-        //  ヘルパーメソッド (フォント・色判定)
-        // =========================================================
 
         private Font ToggleCurrentSelectionFont()
         {
@@ -238,6 +214,12 @@ namespace eep.editer1
         {
             ResetColorToBlack();
             ResetToNormalFont();
+        }
+
+        private Color GetBaseColorFromKey(string key)
+        {
+            if (_colorDictionary.TryGetValue(key, out Color c)) return c;
+            return Color.Black;
         }
 
         private string NormalizeInput(string input)
@@ -272,16 +254,10 @@ namespace eep.editer1
             return bestColor;
         }
 
-        // =========================================================
-        //  チャンク判定ロジック
-        // =========================================================
-
-        // トリガー検出用: 空白で区切られた範囲を探す
         private int GetTriggerChunkStart(int caretPos)
         {
-            int startPos = caretPos;
-            // 検索範囲を最大20文字程度に制限してパフォーマンス確保
-            int limit = Math.Max(0, caretPos - 20);
+            int limit = Math.Max(0, caretPos - 50);
+            int startPos = limit;
 
             for (int i = caretPos - 1; i >= limit; i--)
             {
@@ -290,18 +266,17 @@ namespace eep.editer1
                     startPos = i + 1;
                     break;
                 }
-                if (i == 0) startPos = 0;
             }
             return startPos;
         }
 
-        // 色塗り範囲決定用: 句読点を考慮して賢く範囲を決める
         private int GetColorRangeStart(int keywordStartPos)
         {
             int startPos = keywordStartPos;
             bool encounteredPunctuationAtEnd = false;
+            int limit = Math.Max(0, keywordStartPos - 200);
 
-            for (int i = keywordStartPos - 1; i >= 0; i--)
+            for (int i = keywordStartPos - 1; i >= limit; i--)
             {
                 char c = _richTextBox.Text[i];
 
@@ -313,31 +288,54 @@ namespace eep.editer1
 
                 if (c == '。' || c == '、' || c == '.' || c == ',')
                 {
-                    // キーワード直結の句読点は含める
                     if (i == keywordStartPos - 1)
                     {
                         encounteredPunctuationAtEnd = true;
                         continue;
                     }
-                    // 文末句読点を通過後の、次の句読点は区切りとみなす
                     if (encounteredPunctuationAtEnd)
                     {
                         startPos = i + 1;
                         break;
                     }
-                    // それ以外の途中にある句読点も区切りとみなす
                     startPos = i + 1;
                     break;
                 }
-
                 if (i == 0) startPos = 0;
             }
             return startPos;
         }
 
-        // =========================================================
-        //  色定義データ (長大なのでRegion化)
-        // =========================================================
+        private void InitializeModifiers()
+        {
+            Func<Color, Color> lighter = c => ControlPaint.Light(c, 0.6f);
+            Func<Color, Color> darker = c => ControlPaint.Dark(c, 0.3f);
+            Func<Color, Color> pastel = c => ControlPaint.Light(c, 0.3f);
+
+            void AddMod(string[] words, Func<Color, Color> func)
+            {
+                foreach (var w in words) _modifiers[w] = func;
+            }
+
+            AddMod(new[] { "薄い", "うすい", "淡い", "あわい", "ライトな" }, lighter);
+            AddMod(new[] { "暗い", "くらい", "濃い", "こい", "ダークな" }, darker);
+            AddMod(new[] { "パステル", "ぱすてる", "明るい", "あかるい" }, pastel);
+        }
+
+        private Color ApplyModifier(Color baseColor, string textBeforeColor, out int modifierLength)
+        {
+            modifierLength = 0;
+            foreach (var mod in _modifiers)
+            {
+                if (textBeforeColor.EndsWith(mod.Key))
+                {
+                    modifierLength = mod.Key.Length;
+                    return mod.Value(baseColor);
+                }
+            }
+            return baseColor;
+        }
+
         #region Color Definitions
 
         private void InitializeColorClassifier()
@@ -350,8 +348,7 @@ namespace eep.editer1
             void Add(string name, int r, int g, int b) => _colorDictionary[name] = Color.FromArgb(r, g, b);
 
             _standardCategories.Clear();
-
-            // --- 標準カテゴリ ---
+            //標準カテゴリ
             _standardCategories.Add(("BLACK", Color.Black));
             _standardCategories.Add(("DIM_GRAY", Color.DimGray));
             _standardCategories.Add(("GRAY", Color.Gray));
@@ -381,17 +378,12 @@ namespace eep.editer1
             _standardCategories.Add(("ORANGE", Color.Orange));
             _standardCategories.Add(("BROWN", Color.SaddleBrown));
             _standardCategories.Add(("BEIGE", Color.Beige));
-            // 直前のやり取りで追加したカテゴリ
             _standardCategories.Add(("YELLOW_GREEN", Color.YellowGreen));
             _standardCategories.Add(("LAWN_GREEN", Color.LawnGreen));
             _standardCategories.Add(("CREAM", Color.LemonChiffon));
             _standardCategories.Add(("GOLDENROD", Color.Goldenrod));
             _standardCategories.Add(("CHOCOLATE", Color.Chocolate));
-
-            // --- 辞書データ (300色規模) ---
-
-
-            // --- 赤・ピンク系 ---
+            //カラー辞書
             AddColor(new[] { "赤", "あか", "アカ", "RED", "red" }, 255, 0, 0);
             AddColor(new[] { "紅", "べに", "ベニ", "クリムゾン", "くりむぞん" }, 220, 20, 60);
             AddColor(new[] { "朱", "しゅ", "あけ", "バーミリオン", "ばーみりおん" }, 235, 97, 1);
@@ -409,7 +401,6 @@ namespace eep.editer1
             AddColor(new[] { "牡丹", "ぼたん" }, 211, 47, 127);
             AddColor(new[] { "つつじ" }, 233, 82, 149);
 
-            // --- 橙・茶系 ---
             AddColor(new[] { "橙", "だいだい", "オレンジ", "おれんじ", "ORANGE", "orange" }, 255, 165, 0);
             AddColor(new[] { "柿", "かき" }, 237, 109, 53);
             AddColor(new[] { "杏", "あんず", "アプリコット", "あぷりこっと" }, 247, 185, 119);
@@ -427,7 +418,6 @@ namespace eep.editer1
             AddColor(new[] { "煉瓦", "れんが", "レンガ", "ブリック", "ぶりっく" }, 181, 82, 47);
             AddColor(new[] { "鳶", "とび" }, 149, 72, 63);
 
-            // --- 黄・金系 ---
             AddColor(new[] { "黄", "き", "イエロー", "いえろー", "YELLOW", "yellow" }, 255, 255, 0);
             AddColor(new[] { "山吹", "やまぶき" }, 248, 181, 0);
             AddColor(new[] { "金", "きん", "ゴールド", "ごーるど", "GOLD" }, 255, 215, 0);
@@ -439,7 +429,6 @@ namespace eep.editer1
             AddColor(new[] { "ウコン", "うこん", "ターメリック", "たーめりっく" }, 250, 186, 12);
             AddColor(new[] { "カナリア", "かなりあ" }, 229, 216, 92);
 
-            // --- 緑・黄緑系 ---
             AddColor(new[] { "緑", "みどり", "グリーン", "ぐりーん", "GREEN", "green" }, 0, 128, 0);
             AddColor(new[] { "黄緑", "きみどり", "ライム", "らいむ" }, 50, 205, 50);
             AddColor(new[] { "深緑", "ふかみどり" }, 0, 85, 46);
@@ -458,7 +447,6 @@ namespace eep.editer1
             AddColor(new[] { "海松", "みる" }, 114, 109, 66);
             AddColor(new[] { "青磁", "せいじ" }, 126, 190, 171);
 
-            // --- 青・水色系 ---
             AddColor(new[] { "青", "あお", "アオ", "ブルー", "ぶるー", "BLUE", "blue" }, 0, 0, 255);
             AddColor(new[] { "水", "みず", "ライトブルー", "らいとぶるー" }, 173, 216, 230);
             AddColor(new[] { "シアン", "しあん", "CYAN" }, 0, 255, 255);
@@ -476,7 +464,6 @@ namespace eep.editer1
             AddColor(new[] { "サックス", "さっくす" }, 75, 144, 194);
             AddColor(new[] { "鉄紺", "てつこん" }, 23, 27, 38);
 
-            // --- 紫・菫系 ---
             AddColor(new[] { "紫", "むらさき", "パープル", "ぱーぷる", "PURPLE", "purple" }, 128, 0, 128);
             AddColor(new[] { "菫", "すみれ", "バイオレット", "ばいおれっと" }, 238, 130, 238);
             AddColor(new[] { "藤", "ふじ", "ウィステリア", "うぃすてりあ" }, 187, 188, 222);
@@ -491,7 +478,6 @@ namespace eep.editer1
             AddColor(new[] { "オーキッド", "おーきっど", "蘭", "らん" }, 218, 112, 214);
             AddColor(new[] { "プラム", "ぷらむ" }, 221, 160, 221);
 
-            // --- 白・黒・灰系 ---
             AddColor(new[] { "白", "しろ", "ホワイト", "ほわいと", "WHITE", "white" }, 255, 255, 255);
             AddColor(new[] { "黒", "くろ", "ブラック", "ぶらっく", "BLACK", "black" }, 0, 0, 0);
             AddColor(new[] { "灰", "はい", "グレー", "ぐれー", "グレイ", "ぐれい", "GRAY", "gray" }, 128, 128, 128);
@@ -505,12 +491,11 @@ namespace eep.editer1
             AddColor(new[] { "深川鼠", "ふかがわねずみ" }, 133, 169, 174);
             AddColor(new[] { "鳩羽鼠", "はとばねずみ" }, 158, 143, 150);
 
-            // --- その他 ---
             AddColor(new[] { "虹", "にじ", "レインボー", "れいんぼー" }, 255, 255, 255);
             Add("透明", 255, 255, 255);
             Add("とうめい", 255, 255, 255);
-
-            #endregion
         }
+
+        #endregion
     }
 }
