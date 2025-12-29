@@ -9,7 +9,7 @@ namespace eep.editer1
     {
         private readonly PictureBox _cursorBox;
 
-        // アクセントカラー保持用 (初期値は黒にしておく)
+        // アクセントカラー保持用 (初期値は黒)
         private Color _systemAccentColor = Color.Black;
 
         private int _blinkTimer = 0;
@@ -19,7 +19,7 @@ namespace eep.editer1
         {
             _cursorBox = cursorBox;
             InitializeStyle();
-            GetSystemAccentColor(); // ★復活: 起動時に色を取得
+            GetSystemAccentColor(); // 起動時に色を取得
         }
 
         private void InitializeStyle()
@@ -33,7 +33,7 @@ namespace eep.editer1
             }
         }
 
-        // ★復活: Windowsのアクセントカラーを取得するメソッド
+        // Windowsのアクセントカラーを取得するメソッド
         private void GetSystemAccentColor()
         {
             try
@@ -71,7 +71,7 @@ namespace eep.editer1
 
             if (isImeComposing)
             {
-                // ★IME入力中: アクセントカラーを使い、少し太くする(5px)
+                // IME入力中: アクセントカラーを使い、少し太くする(5px)
                 // もし物理演算で5px以上に膨らんでいたら、太い方を採用する
                 targetColor = _systemAccentColor;
                 if (targetWidth < 5.0f) targetWidth = 5.0f;

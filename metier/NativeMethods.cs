@@ -36,7 +36,7 @@ namespace eep.editer1
         [DllImport("winmm.dll")]
         public static extern uint timeEndPeriod(uint uPeriod);
 
-        // --- ★追加: 描画停止/再開用 (WM_SETREDRAW) ---
+        // --- 描画停止/再開用 (WM_SETREDRAW) ---
         public const int WM_SETREDRAW = 0x000B;
 
         [DllImport("user32.dll")]

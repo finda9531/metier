@@ -15,18 +15,15 @@ namespace eep.editer1
         private readonly FileManager _fileManager;
         private readonly Stopwatch _stopwatch;
 
-        // --- Settings ---
         private const int TIMER_INTERVAL_MS = 6;
         private const float BASE_INTERVAL_MS = 10.0f;
         private const float CLICK_ANIMATION_MS = 260.0f;
-
         private const long PHYSICS_TIMEOUT_MS = 200;
         private const long BLINK_TIMEOUT_MS = 400;
         private const float MAX_ELAPSED_MS = 100.0f;
         private const float RATCHET_THRESHOLD_MULTIPLIER = 3.0f;
         private const float Y_SNAP_THRESHOLD = 50.0f;
 
-        // --- State ---
         private float _lastInputBaseLine = -1f;
         private bool _isLineSignificant = false;
         private int _currentLineIndex = -1;
@@ -38,9 +35,7 @@ namespace eep.editer1
             NativeMethods.timeBeginPeriod(1);
 
             _stopwatch = new Stopwatch();
-            _physics = new CursorPhysics();
-            _physics.AnimationDuration = CLICK_ANIMATION_MS;
-
+            _physics = new CursorPhysics { AnimationDuration = CLICK_ANIMATION_MS };
             _inputState = new CursorInputState();
             _renderer = new CursorRenderer(cursorBox);
             _textStyler = new TextStyler(richTextBox1);
@@ -90,7 +85,6 @@ namespace eep.editer1
 
         private void Timer1_Tick(object sender, EventArgs e)
         {
-            // 1. 削除操作の検知
             int currentSelStart = richTextBox1.SelectionStart;
             if (currentSelStart < _lastSelectionStart)
             {
@@ -98,39 +92,33 @@ namespace eep.editer1
             }
             _lastSelectionStart = currentSelStart;
 
-            // 2. 状態取得
             float deltaTime = CalculateDeltaTime();
             var metrics = GetCurrentCursorMetrics();
             var input = GetCurrentInputState();
 
             InitializeBaseLineIfNeeded(metrics);
 
-            // 3. ターゲット座標決定 & 行移動検知
             int currentLineIdx = richTextBox1.GetLineFromCharIndex(richTextBox1.SelectionStart);
             int calculatedBottom = metrics.RawPosition.Y + metrics.Height;
 
             if (currentLineIdx != _currentLineIndex)
             {
-                // 行が変わった場合：ベースライン更新 & アニメーション開始
                 _lastInputBaseLine = calculatedBottom;
                 _currentLineIndex = currentLineIdx;
 
-                Point jumpTarget = new Point(metrics.RawPosition.X, (int)_lastInputBaseLine);
-                // 改行アニメーション開始（isLineJump = true）
+                var jumpTarget = new Point(metrics.RawPosition.X, (int)_lastInputBaseLine);
                 _physics.StartAnimation(jumpTarget, isLineJump: true);
             }
             else
             {
-                // 同じ行にいる場合：Sticky Baseline制御
                 if (!input.IsComposing && !input.IsTypingForPhysics)
                 {
                     _lastInputBaseLine = Math.Max(_lastInputBaseLine, calculatedBottom);
                 }
             }
 
-            Point targetPosition = new Point(metrics.RawPosition.X, (int)_lastInputBaseLine);
+            var targetPosition = new Point(metrics.RawPosition.X, (int)_lastInputBaseLine);
 
-            // 4. 物理演算更新
             _physics.Update(
                 targetPosition,
                 input.IsTypingForPhysics,
@@ -142,7 +130,6 @@ namespace eep.editer1
                 input.ElapsedSinceInput
             );
 
-            // 5. 描画 (液体の幅と色ブレンドを反映)
             _renderer.Render(
                 _physics.PosX,
                 _physics.PosY - metrics.Height,
@@ -239,29 +226,23 @@ namespace eep.editer1
         {
             _inputState.RegisterMouseClick();
 
-            // 1. 基本的な位置取得
             int index = richTextBox1.GetCharIndexFromPosition(e.Location);
             Point pt = richTextBox1.GetPositionFromCharIndex(index);
 
-            // 2. ★シンプル補正: 「最後の文字」の右側をクリックした時だけ特別扱いする
-            // 他の文字は、右半分をクリックすれば勝手に「次の文字」がindexとして返ってくるので無視してOK
             if (index == richTextBox1.TextLength - 1)
             {
-                Point ptEnd = richTextBox1.GetPositionFromCharIndex(index + 1); // 文末の座標
+                Point ptEnd = richTextBox1.GetPositionFromCharIndex(index + 1);
                 int charWidth = ptEnd.X - pt.X;
 
-                // クリック位置が最後の文字の「右半分～無限の彼方」なら
                 if (e.Location.X > pt.X + (charWidth / 2))
                 {
-                    index++;      // インデックスを「文末」に進める
-                    pt = ptEnd;   // 描画座標も「文末」にする
+                    index++;
+                    pt = ptEnd;
                 }
             }
 
-            // ★重要: 計算した index を即座に内部カーソルに反映させる（これが「勘違い」の原因でした）
             richTextBox1.Select(index, 0);
 
-            // --- 以降は座標変換とアニメーション処理 ---
             pt.X += richTextBox1.Location.X;
             pt.Y += richTextBox1.Location.Y;
 
@@ -273,13 +254,11 @@ namespace eep.editer1
             int lineEnd = richTextBox1.GetFirstCharIndexFromLine(_currentLineIndex + 1);
             if (lineEnd == -1) lineEnd = richTextBox1.TextLength;
 
-            // フォントサイズスキャン（ちらつき防止）
             if (clickedFont.Size < 20)
             {
-                NativeMethods.SendMessage(richTextBox1.Handle, NativeMethods.WM_SETREDRAW, 0, 0);
+                NativeMethods.SendMessage(richTextBox1.Handle, 11, 0, 0); // WM_SETREDRAW = 11
                 try
                 {
-                    // indexは既にSelect済みなので、スキャン後に復帰させるだけでOK
                     for (int i = lineStart; i < lineEnd; i++)
                     {
                         richTextBox1.Select(i, 1);
@@ -289,11 +268,11 @@ namespace eep.editer1
                             break;
                         }
                     }
-                    richTextBox1.Select(index, 0); // 復帰
+                    richTextBox1.Select(index, 0);
                 }
                 finally
                 {
-                    NativeMethods.SendMessage(richTextBox1.Handle, NativeMethods.WM_SETREDRAW, 1, 0);
+                    NativeMethods.SendMessage(richTextBox1.Handle, 11, 1, 0);
                     richTextBox1.Refresh();
                 }
             }
@@ -301,11 +280,9 @@ namespace eep.editer1
             _lastInputBaseLine = pt.Y + appliedHeight;
             _isLineSignificant = (lineEnd - lineStart) >= 5;
 
-            // 前の文字が大きい場合の補正 (行が変わっていない場合のみ)
             if (index > 0)
             {
                 int prevCharIndex = index - 1;
-                // 同じ行かチェック
                 if (richTextBox1.GetLineFromCharIndex(prevCharIndex) == richTextBox1.GetLineFromCharIndex(index))
                 {
                     richTextBox1.Select(prevCharIndex, 1);
@@ -314,12 +291,11 @@ namespace eep.editer1
                     {
                         _lastInputBaseLine = pt.Y + prevFont.Height;
                     }
-                    richTextBox1.Select(index, 0); // 復帰
+                    richTextBox1.Select(index, 0);
                 }
             }
 
             _physics.StartAnimation(new Point(pt.X, (int)_lastInputBaseLine), isLineJump: false);
-
             ForceHideSystemCaret();
         }
 
@@ -340,7 +316,15 @@ namespace eep.editer1
         {
             Point p = GetCaretPosition();
             Font f = richTextBox1.SelectionFont ?? richTextBox1.Font;
-            return new CursorMetrics { RawPosition = p, Font = f, Height = f.Height, Color = richTextBox1.SelectionColor, CharWidth = TextRenderer.MeasureText("あ", f).Width, RatchetThreshold = f.Size * RATCHET_THRESHOLD_MULTIPLIER };
+            return new CursorMetrics
+            {
+                RawPosition = p,
+                Font = f,
+                Height = f.Height,
+                Color = richTextBox1.SelectionColor,
+                CharWidth = TextRenderer.MeasureText("あ", f).Width,
+                RatchetThreshold = f.Size * RATCHET_THRESHOLD_MULTIPLIER
+            };
         }
 
         private InputStateInfo GetCurrentInputState()
@@ -365,13 +349,34 @@ namespace eep.editer1
         {
             int idx = richTextBox1.SelectionStart;
             Point p = (idx < 0) ? new Point(0, 0) : richTextBox1.GetPositionFromCharIndex(idx);
-            p.X += richTextBox1.Location.X; p.Y += richTextBox1.Location.Y;
+            p.X += richTextBox1.Location.X;
+            p.Y += richTextBox1.Location.Y;
             return p;
         }
 
-        protected override void OnShown(EventArgs e) { base.OnShown(e); ForceHideSystemCaret(); }
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            ForceHideSystemCaret();
+        }
 
-        private struct CursorMetrics { public Point RawPosition; public Font Font; public int Height; public Color Color; public float CharWidth; public float RatchetThreshold; }
-        private struct InputStateInfo { public bool IsComposing; public bool IsDeleting; public long ElapsedSinceInput; public bool IsTypingForPhysics; public bool IsTypingForBlink; }
+        private struct CursorMetrics
+        {
+            public Point RawPosition;
+            public Font Font;
+            public int Height;
+            public Color Color;
+            public float CharWidth;
+            public float RatchetThreshold;
+        }
+
+        private struct InputStateInfo
+        {
+            public bool IsComposing;
+            public bool IsDeleting;
+            public long ElapsedSinceInput;
+            public bool IsTypingForPhysics;
+            public bool IsTypingForBlink;
+        }
     }
 }

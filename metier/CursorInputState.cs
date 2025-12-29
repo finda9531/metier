@@ -8,7 +8,7 @@ namespace eep.editer1
     {
         private long lastInputTime = 0;
 
-        // ★追加: 最後のマウスクリック時間を記録する変数
+        // 最後のマウスクリック時間を記録する変数
         private long lastMouseClickTime = 0;
 
         public Keys LastKeyDown { get; private set; } = Keys.None;
@@ -39,7 +39,7 @@ namespace eep.editer1
             lastInputTime = DateTime.Now.Ticks / 10000;
         }
 
-        // ★追加: マウスをクリックした時に呼ぶメソッド
+        // マウスをクリックした時に呼ぶメソッド
         public void RegisterMouseClick()
         {
             lastMouseClickTime = DateTime.Now.Ticks / 10000;
@@ -51,7 +51,7 @@ namespace eep.editer1
             return now - lastInputTime;
         }
 
-        // ★追加: 最後のクリックからの経過時間を取得するメソッド
+        // 最後のクリックからの経過時間を取得するメソッド
         public long GetMillisecondsSinceLastClick()
         {
             long now = DateTime.Now.Ticks / 10000;
