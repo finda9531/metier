@@ -18,7 +18,7 @@ namespace eep.editer1
         // --- Settings ---
         private const int TIMER_INTERVAL_MS = 6;
         private const float BASE_INTERVAL_MS = 10.0f;
-        private const float CLICK_ANIMATION_MS = 300.0f;
+        private const float CLICK_ANIMATION_MS = 260.0f;
 
         private const long PHYSICS_TIMEOUT_MS = 200;
         private const long BLINK_TIMEOUT_MS = 400;

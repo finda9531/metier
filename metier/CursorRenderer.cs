@@ -118,7 +118,7 @@ namespace eep.editer1
             if (expansion <= 0) return baseColor;
 
             // 減衰計算
-            float intensity = 1.0f / (1.0f + expansion * 0.2f);
+            float intensity = 1.0f / (1.0f + expansion * 0.25f);
 
             // 白背景とのブレンド
             int r = (int)(baseColor.R * intensity + 255 * (1 - intensity));
