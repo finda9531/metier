@@ -237,14 +237,33 @@ namespace eep.editer1
                 if (!_colorDictionary.TryGetValue(inputWord, out hitColor)) return Color.Black;
             }
 
+            // “色相・彩度・明度”
+            float h1 = hitColor.GetHue();
+            float s1 = hitColor.GetSaturation();
+            float b1 = hitColor.GetBrightness();
+
             Color bestColor = Color.Black;
             double minDistance = double.MaxValue;
 
             foreach (var cat in _standardCategories)
             {
-                double dist = Math.Pow(hitColor.R - cat.Color.R, 2) +
-                              Math.Pow(hitColor.G - cat.Color.G, 2) +
-                              Math.Pow(hitColor.B - cat.Color.B, 2);
+                float h2 = cat.Color.GetHue();
+                float s2 = cat.Color.GetSaturation();
+                float b2 = cat.Color.GetBrightness();
+
+                // 色相の差
+                float dh = Math.Abs(h1 - h2);
+                if (dh > 180) dh = 360 - dh;
+                float normalizedDh = dh / 180.0f; // 0.0 ~ 1.0
+
+                // 彩度が極端に低い “無彩色” と “有彩色” が混ざらないように重み付け
+          
+                float hueWeight = (s1 < 0.15f || s2 < 0.15f) ? 0.0f : 1.5f;
+
+                double dist = Math.Pow(normalizedDh * hueWeight, 2) +
+                              Math.Pow(s1 - s2, 2) +
+                              Math.Pow(b1 - b2, 2);
+
                 if (dist < minDistance)
                 {
                     minDistance = dist;
@@ -253,6 +272,7 @@ namespace eep.editer1
             }
             return bestColor;
         }
+
 
         private int GetTriggerChunkStart(int caretPos)
         {
