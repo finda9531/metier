@@ -71,6 +71,7 @@ namespace eep.editer1
             int caretPos = _richTextBox.SelectionStart;
             if (caretPos == 0) return false;
 
+            // 1. まずキーワード検索を試みる
             int searchStart = GetTriggerChunkStart(caretPos);
             string chunkText = _richTextBox.Text.Substring(searchStart, caretPos - searchStart);
 
@@ -93,6 +94,7 @@ namespace eep.editer1
                 }
             }
 
+            // A. キーワードが見つかった場合 -> 指定色を強制適用（トグルなし）
             if (matchedKey != null)
             {
                 string prefix = chunkText.Substring(0, chunkText.Length - matchedInput.Length);
@@ -118,9 +120,36 @@ namespace eep.editer1
                 return true;
             }
 
+            // B. キーワードがない場合 -> 「直前の文字の色」をチェックして、黒以外ならリセットする
+            // これが「解除」の専用操作になる
+            if (caretPos > 0)
+            {
+                _richTextBox.Select(caretPos - 1, 1);
+                Color prevColor = _richTextBox.SelectionColor;
+                _richTextBox.Select(caretPos, 0);
+
+                if (prevColor.ToArgb() != Color.Black.ToArgb())
+                {
+                    int rangeStart = GetColorRangeStart(caretPos);
+                    int modifyLength = caretPos - rangeStart;
+
+                    if (modifyLength > 0)
+                    {
+                        _richTextBox.Select(rangeStart, modifyLength);
+                        _richTextBox.SelectionColor = Color.Black;
+
+                        _richTextBox.Select(caretPos, 0);
+                        _richTextBox.SelectionColor = Color.Black;
+
+                        return true;
+                    }
+                }
+            }
+
             return false;
         }
 
+        // 修正箇所：トグルロジックを廃止し、常に targetColor を適用するように変更
         private void ApplyColorLogic(int caretPos, string matchedInput, Color targetColor, bool keepTriggerWord)
         {
             int keywordStartPos = caretPos - matchedInput.Length;
@@ -128,17 +157,19 @@ namespace eep.editer1
 
             if (isPatternB)
             {
+                // 【Pattern B】書き始めモード
                 if (!keepTriggerWord)
                 {
                     _richTextBox.Select(keywordStartPos, matchedInput.Length);
                     _richTextBox.SelectedText = "";
                 }
 
-                bool isAlreadyTargetColor = (_richTextBox.SelectionColor.ToArgb() == targetColor.ToArgb());
-                _richTextBox.SelectionColor = isAlreadyTargetColor ? Color.Black : targetColor;
+                // ★変更: トグル判定を削除し、強制的に色を適用
+                _richTextBox.SelectionColor = targetColor;
             }
             else
             {
+                // 【Pattern A】直前の文を塗るモード
                 int rangeStart = GetColorRangeStart(keywordStartPos);
                 int modifyLength = keywordStartPos - rangeStart;
 
@@ -151,8 +182,9 @@ namespace eep.editer1
                 if (modifyLength > 0)
                 {
                     _richTextBox.Select(rangeStart, modifyLength);
-                    bool isAlreadyTargetColor = (_richTextBox.SelectionColor.ToArgb() == targetColor.ToArgb());
-                    _richTextBox.SelectionColor = isAlreadyTargetColor ? Color.Black : targetColor;
+
+                    // ★変更: トグル判定を削除し、強制的に色を適用
+                    _richTextBox.SelectionColor = targetColor;
 
                     _richTextBox.Select(rangeStart + modifyLength, 0);
                     _richTextBox.SelectionColor = Color.Black;
@@ -237,7 +269,6 @@ namespace eep.editer1
                 if (!_colorDictionary.TryGetValue(inputWord, out hitColor)) return Color.Black;
             }
 
-            // “色相・彩度・明度”
             float h1 = hitColor.GetHue();
             float s1 = hitColor.GetSaturation();
             float b1 = hitColor.GetBrightness();
@@ -251,13 +282,10 @@ namespace eep.editer1
                 float s2 = cat.Color.GetSaturation();
                 float b2 = cat.Color.GetBrightness();
 
-                // 色相の差
                 float dh = Math.Abs(h1 - h2);
                 if (dh > 180) dh = 360 - dh;
-                float normalizedDh = dh / 180.0f; // 0.0 ~ 1.0
+                float normalizedDh = dh / 180.0f;
 
-                // 彩度が極端に低い “無彩色” と “有彩色” が混ざらないように重み付け
-          
                 float hueWeight = (s1 < 0.15f || s2 < 0.15f) ? 0.0f : 1.5f;
 
                 double dist = Math.Pow(normalizedDh * hueWeight, 2) +
@@ -272,7 +300,6 @@ namespace eep.editer1
             }
             return bestColor;
         }
-
 
         private int GetTriggerChunkStart(int caretPos)
         {
@@ -290,7 +317,6 @@ namespace eep.editer1
             return startPos;
         }
 
-        // 色塗り範囲
         private int GetColorRangeStart(int keywordStartPos)
         {
             int startPos = keywordStartPos;
@@ -307,36 +333,26 @@ namespace eep.editer1
                     break;
                 }
 
-               
-                if (c == '。' || c == ',' ||
+                if (c == '。' || c == '、' || c == '.' || c == ',' ||
                     c == '？' || c == '?' || c == '！' || c == '!')
                 {
-                    // キーワード直結の記号は文の一部として含める
-                    // 例:「元気？赤」→「元気？」までを赤くする
                     if (i == keywordStartPos - 1)
                     {
                         encounteredPunctuationAtEnd = true;
                         continue;
                     }
-
-                    // 文末記号を通過後の、次の記号は区切りとみなす
-                    // 例:「終わった。元気？赤」→「元気？」だけを赤くする
                     if (encounteredPunctuationAtEnd)
                     {
                         startPos = i + 1;
                         break;
                     }
-
-                    // それ以外の途中にある記号も区切りとみなす
                     startPos = i + 1;
                     break;
                 }
-
                 if (i == 0) startPos = 0;
             }
             return startPos;
         }
-
 
         private void InitializeModifiers()
         {
@@ -380,7 +396,7 @@ namespace eep.editer1
             void Add(string name, int r, int g, int b) => _colorDictionary[name] = Color.FromArgb(r, g, b);
 
             _standardCategories.Clear();
-            //標準カテゴリ
+
             _standardCategories.Add(("BLACK", Color.Black));
             _standardCategories.Add(("DIM_GRAY", Color.DimGray));
             _standardCategories.Add(("GRAY", Color.Gray));
@@ -415,7 +431,8 @@ namespace eep.editer1
             _standardCategories.Add(("CREAM", Color.LemonChiffon));
             _standardCategories.Add(("GOLDENROD", Color.Goldenrod));
             _standardCategories.Add(("CHOCOLATE", Color.Chocolate));
-            //カラー辞書
+
+            // 赤・ピンク系
             AddColor(new[] { "赤", "あか", "アカ", "RED", "red" }, 255, 0, 0);
             AddColor(new[] { "紅", "べに", "ベニ", "クリムゾン", "くりむぞん" }, 220, 20, 60);
             AddColor(new[] { "朱", "しゅ", "あけ", "バーミリオン", "ばーみりおん" }, 235, 97, 1);
@@ -433,6 +450,7 @@ namespace eep.editer1
             AddColor(new[] { "牡丹", "ぼたん" }, 211, 47, 127);
             AddColor(new[] { "つつじ" }, 233, 82, 149);
 
+            // 橙・茶系
             AddColor(new[] { "橙", "だいだい", "オレンジ", "おれんじ", "ORANGE", "orange" }, 255, 165, 0);
             AddColor(new[] { "柿", "かき" }, 237, 109, 53);
             AddColor(new[] { "杏", "あんず", "アプリコット", "あぷりこっと" }, 247, 185, 119);
@@ -450,6 +468,7 @@ namespace eep.editer1
             AddColor(new[] { "煉瓦", "れんが", "レンガ", "ブリック", "ぶりっく" }, 181, 82, 47);
             AddColor(new[] { "鳶", "とび" }, 149, 72, 63);
 
+            // 黄・金系
             AddColor(new[] { "黄", "き", "イエロー", "いえろー", "YELLOW", "yellow" }, 255, 255, 0);
             AddColor(new[] { "山吹", "やまぶき" }, 248, 181, 0);
             AddColor(new[] { "金", "きん", "ゴールド", "ごーるど", "GOLD" }, 255, 215, 0);
@@ -461,6 +480,7 @@ namespace eep.editer1
             AddColor(new[] { "ウコン", "うこん", "ターメリック", "たーめりっく" }, 250, 186, 12);
             AddColor(new[] { "カナリア", "かなりあ" }, 229, 216, 92);
 
+            // 緑・黄緑系
             AddColor(new[] { "緑", "みどり", "グリーン", "ぐりーん", "GREEN", "green" }, 0, 128, 0);
             AddColor(new[] { "黄緑", "きみどり", "ライム", "らいむ" }, 50, 205, 50);
             AddColor(new[] { "深緑", "ふかみどり" }, 0, 85, 46);
@@ -479,6 +499,7 @@ namespace eep.editer1
             AddColor(new[] { "海松", "みる" }, 114, 109, 66);
             AddColor(new[] { "青磁", "せいじ" }, 126, 190, 171);
 
+            // 青・水色系
             AddColor(new[] { "青", "あお", "アオ", "ブルー", "ぶるー", "BLUE", "blue" }, 0, 0, 255);
             AddColor(new[] { "水", "みず", "ライトブルー", "らいとぶるー" }, 173, 216, 230);
             AddColor(new[] { "シアン", "しあん", "CYAN" }, 0, 255, 255);
@@ -496,6 +517,7 @@ namespace eep.editer1
             AddColor(new[] { "サックス", "さっくす" }, 75, 144, 194);
             AddColor(new[] { "鉄紺", "てつこん" }, 23, 27, 38);
 
+            // 紫・菫系
             AddColor(new[] { "紫", "むらさき", "パープル", "ぱーぷる", "PURPLE", "purple" }, 128, 0, 128);
             AddColor(new[] { "菫", "すみれ", "バイオレット", "ばいおれっと" }, 238, 130, 238);
             AddColor(new[] { "藤", "ふじ", "ウィステリア", "うぃすてりあ" }, 187, 188, 222);
@@ -510,6 +532,7 @@ namespace eep.editer1
             AddColor(new[] { "オーキッド", "おーきっど", "蘭", "らん" }, 218, 112, 214);
             AddColor(new[] { "プラム", "ぷらむ" }, 221, 160, 221);
 
+            // 白・黒・灰系
             AddColor(new[] { "白", "しろ", "ホワイト", "ほわいと", "WHITE", "white" }, 255, 255, 255);
             AddColor(new[] { "黒", "くろ", "ブラック", "ぶらっく", "BLACK", "black" }, 0, 0, 0);
             AddColor(new[] { "灰", "はい", "グレー", "ぐれー", "グレイ", "ぐれい", "GRAY", "gray" }, 128, 128, 128);
@@ -523,6 +546,7 @@ namespace eep.editer1
             AddColor(new[] { "深川鼠", "ふかがわねずみ" }, 133, 169, 174);
             AddColor(new[] { "鳩羽鼠", "はとばねずみ" }, 158, 143, 150);
 
+            // その他
             AddColor(new[] { "虹", "にじ", "レインボー", "れいんぼー" }, 255, 255, 255);
             Add("透明", 255, 255, 255);
             Add("とうめい", 255, 255, 255);
