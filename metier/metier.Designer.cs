@@ -1,4 +1,4 @@
-﻿namespace eep.editer1
+﻿namespace Metier
 {
     // クラス名が Metier になっていること、partial であることを確認
     partial class Metier

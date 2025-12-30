@@ -4,7 +4,7 @@ using System.Drawing;
 using System.Windows.Forms;
 using System.Diagnostics;
 
-namespace eep.editer1
+namespace Metier
 {
     public partial class Metier : Form
     {
@@ -22,7 +22,6 @@ namespace eep.editer1
         private const long BLINK_TIMEOUT_MS = 400;
         private const float MAX_ELAPSED_MS = 100.0f;
         private const float RATCHET_THRESHOLD_MULTIPLIER = 3.0f;
-        private const float Y_SNAP_THRESHOLD = 50.0f;
 
         private float _lastInputBaseLine = -1f;
         private bool _isLineSignificant = false;
@@ -32,7 +31,8 @@ namespace eep.editer1
         public Metier()
         {
             InitializeComponent();
-            NativeMethods.timeBeginPeriod(1);
+
+            _ = NativeMethods.timeBeginPeriod(1);
 
             _stopwatch = new Stopwatch();
             _physics = new CursorPhysics { AnimationDuration = CLICK_ANIMATION_MS };
@@ -56,7 +56,7 @@ namespace eep.editer1
             FormClosing += (s, e) =>
             {
                 _fileManager.AutoSave();
-                NativeMethods.timeEndPeriod(1);
+                _ = NativeMethods.timeEndPeriod(1);
             };
         }
 
@@ -67,13 +67,24 @@ namespace eep.editer1
             richTextBox1.ImeMode = ImeMode.On;
             richTextBox1.AcceptsTab = true;
 
-            richTextBox1.SelectionChanged += (s, e) => { ForceHideSystemCaret(); _renderer.ResetBlink(); };
+            // ★変更: カーソル移動時にTextStylerへ通知してフラグ管理を行う
+            richTextBox1.SelectionChanged += (s, e) =>
+            {
+                ForceHideSystemCaret();
+                _renderer.ResetBlink();
+                _textStyler.OnSelectionChanged();
+            };
+
             richTextBox1.MouseDown += (s, e) => ForceHideSystemCaret();
             richTextBox1.GotFocus += (s, e) => ForceHideSystemCaret();
 
             richTextBox1.TextChanged += RichTextBox1_TextChanged;
             richTextBox1.KeyDown += RichTextBox1_KeyDown;
             richTextBox1.KeyUp += RichTextBox1_KeyUp;
+
+            // ★追加: カッコ自動入力用のイベント
+            richTextBox1.KeyPress += RichTextBox1_KeyPress;
+
             richTextBox1.MouseDown += RichTextBox1_MouseDown;
         }
 
@@ -124,10 +135,7 @@ namespace eep.editer1
                 input.IsTypingForPhysics,
                 input.IsDeleting,
                 metrics.RatchetThreshold,
-                deltaTime,
-                metrics.CharWidth,
-                input.IsComposing,
-                input.ElapsedSinceInput
+                deltaTime
             );
 
             _renderer.Render(
@@ -189,18 +197,69 @@ namespace eep.editer1
 
             bool isComposing = _inputState.IsImeComposing(richTextBox1.Handle);
 
-            if (e.KeyCode == Keys.Enter && !isComposing)
+            if (e.KeyCode == Keys.Enter)
             {
-                _textStyler.ResetToNormalFont();
-                _textStyler.ResetColorToBlack();
-                _isLineSignificant = false;
-            }
+                // IME入力中ではない（確定済み）状態でのEnter
+                if (!isComposing)
+                {
+                    // 色変換を試す
+                    if (_textStyler.ApplyColorLogic(e.Shift))
+                    {
+                        // 色が変わったら改行はしない
+                        e.SuppressKeyPress = true;
+                        return;
+                    }
 
-            if (e.KeyCode == Keys.Tab && _textStyler.ToggleColor(e.Shift)) e.SuppressKeyPress = true;
+                    // ★復活: 通常の改行時は、黒・標準フォントに戻す
+                    _textStyler.ResetToNormalFont();
+                    _textStyler.ResetColorToBlack();
+
+                    _isLineSignificant = false;
+                }
+            }
+        }
+
+        // ★追加実装: カッコの自動ペアリング
+        private void RichTextBox1_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            // IME入力中（変換未確定の状態）は干渉しない
+            if (_inputState.IsImeComposing(richTextBox1.Handle)) return;
+
+            // 対応させたいカッコのペア
+            string openBrackets = "「『（([{\"";
+            string closeBrackets = "」』）)]}\"";
+
+            int index = openBrackets.IndexOf(e.KeyChar);
+
+            if (index >= 0)
+            {
+                char open = openBrackets[index];
+                char close = closeBrackets[index];
+
+                // 本来の入力をキャンセル
+                e.Handled = true;
+
+                // ペアを挿入
+                string pair = open.ToString() + close.ToString();
+                int currentPos = richTextBox1.SelectionStart;
+                richTextBox1.SelectedText = pair;
+
+                // カーソルを真ん中に戻す
+                richTextBox1.Select(currentPos + 1, 0);
+            }
         }
 
         private void RichTextBox1_KeyUp(object sender, KeyEventArgs e)
         {
+            // Enterキーが離された時の処理（IME確定直後の検知用）
+            if (e.KeyCode == Keys.Enter)
+            {
+                // IME確定直後であっても、テキストボックス上にはすでに確定文字がある状態。
+                // ここで色変換を試行する。
+                _textStyler.ApplyColorLogic(e.Shift);
+            }
+
+            // Shift連打による見出し化
             if (e.KeyCode == Keys.ShiftKey)
             {
                 int headingHeight = _textStyler.HandleShiftKeyUp();
@@ -256,7 +315,7 @@ namespace eep.editer1
 
             if (clickedFont.Size < 20)
             {
-                NativeMethods.SendMessage(richTextBox1.Handle, 11, 0, 0); // WM_SETREDRAW = 11
+                _ = NativeMethods.SendMessage(richTextBox1.Handle, NativeMethods.WM_SETREDRAW, 0, 0);
                 try
                 {
                     for (int i = lineStart; i < lineEnd; i++)
@@ -272,7 +331,7 @@ namespace eep.editer1
                 }
                 finally
                 {
-                    NativeMethods.SendMessage(richTextBox1.Handle, 11, 1, 0);
+                    _ = NativeMethods.SendMessage(richTextBox1.Handle, NativeMethods.WM_SETREDRAW, 1, 0);
                     richTextBox1.Refresh();
                 }
             }

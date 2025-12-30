@@ -3,7 +3,7 @@ using System;
 using System.IO;
 using System.Windows.Forms;
 
-namespace eep.editer1
+namespace Metier
 {
     public class FileManager
     {

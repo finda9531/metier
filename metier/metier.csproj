@@ -13,4 +13,9 @@
     <Content Include="note1.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="LibNMeCab" Version="0.10.2" />
+    <PackageReference Include="LibNMeCab.IpaDicBin" Version="0.10.0" />
+  </ItemGroup>
+
 </Project>

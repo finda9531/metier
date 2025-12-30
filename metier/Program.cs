@@ -1,7 +1,7 @@
 using System;
 using System.Windows.Forms;
 
-namespace eep.editer1
+namespace Metier
 {
     static class Program
     {

@@ -3,7 +3,7 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace eep.editer1
+namespace Metier // 名前空間を Metier に修正
 {
     public class CursorRenderer
     {
@@ -14,6 +14,9 @@ namespace eep.editer1
 
         private int _blinkTimer = 0;
         private const int BLINK_INTERVAL = 88;
+
+        // 色の計算に使う基本幅
+        private const float CALC_BASE_WIDTH = 2.0f;
 
         public CursorRenderer(PictureBox cursorBox)
         {
@@ -38,17 +41,15 @@ namespace eep.editer1
         {
             try
             {
-                int colorRaw;
-                bool opaque;
-                // WindowsのAPIから現在のテーマ色を取得
-                NativeMethods.DwmGetColorizationColor(out colorRaw, out opaque);
+                // 修正: out変数をインライン宣言に変更 (IDE0018)
+                NativeMethods.DwmGetColorizationColor(out int colorRaw, out _);
 
                 // アルファチャンネル(透明度)を255(不透明)に強制して色を作成
                 _systemAccentColor = Color.FromArgb(255, Color.FromArgb(colorRaw));
             }
             catch
             {
-                // 取得に失敗した場合は、安全策として「黒」にする（青にはしない）
+                // 取得に失敗した場合は、安全策として「黒」にする
                 _systemAccentColor = Color.Black;
             }
         }
@@ -72,7 +73,6 @@ namespace eep.editer1
             if (isImeComposing)
             {
                 // IME入力中: アクセントカラーを使い、少し太くする(5px)
-                // もし物理演算で5px以上に膨らんでいたら、太い方を採用する
                 targetColor = _systemAccentColor;
                 if (targetWidth < 5.0f) targetWidth = 5.0f;
             }
@@ -108,11 +108,9 @@ namespace eep.editer1
 
         private Color GetThinnedColor(Color baseColor, float width)
         {
-            const float BASE_WIDTH = 2.0f;
-
             // IME入力中で太さが固定されている(5px)場合、
             // その太さを「基準」とみなして、そこからさらに広がった時だけ薄くする
-            float effectiveBase = (baseColor == _systemAccentColor) ? 5.0f : BASE_WIDTH;
+            float effectiveBase = (baseColor == _systemAccentColor) ? 5.0f : CALC_BASE_WIDTH;
 
             float expansion = width - effectiveBase;
             if (expansion <= 0) return baseColor;

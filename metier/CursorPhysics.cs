@@ -2,7 +2,7 @@
 using System;
 using System.Drawing;
 
-namespace eep.editer1
+namespace Metier
 {
     public class CursorPhysics
     {
@@ -16,13 +16,9 @@ namespace eep.editer1
         private const float SNAP_THRESHOLD = 0.5f;
         private const float STOP_VELOCITY = 0.5f;
 
-        // --
-        // 追従性: 0.2 -> 0.3 (少しキビキビさせて、無駄な広がりを抑える)
+        // 液体シミュレーション定数
         private const float LIQUID_FOLLOW_FACTOR = 0.2f;
-
-        // 膨張率: 0.4 -> 0.3 (太くなりすぎないように抑える)
         private const float LIQUID_WIDTH_GAIN = 0.3f;
-
         private const float BASE_WIDTH = 2.0f;
 
         // --- カーソル座標 ---
@@ -68,7 +64,8 @@ namespace eep.editer1
             maxTargetX = newTargetPos.X;
         }
 
-        public void Update(Point realTargetPos, bool isTyping, bool isDeleting, float ratchetThreshold, float deltaTime, float charWidthLimit, bool isComposing, long elapsedInput)
+        // 修正: 使われていないパラメータ (charWidthLimit, isComposing, elapsedInput) を削除
+        public void Update(Point realTargetPos, bool isTyping, bool isDeleting, float ratchetThreshold, float deltaTime)
         {
             if (_liquidX == 0 && PosX != 0) _liquidX = PosX;
 
@@ -100,8 +97,8 @@ namespace eep.editer1
             }
             else
             {
-                // いつもの入力モード
-                float effectiveTargetX = realTargetPos.X;
+                // 修正: 初期化代入を削除 (IDE0059対策)
+                float effectiveTargetX;
 
                 if (isTyping && !isDeleting)
                 {
@@ -113,7 +110,10 @@ namespace eep.editer1
                     else
                     {
                         float jumpDistance = maxTargetX - realTargetPos.X;
-                        if (jumpDistance < ratchetThreshold) effectiveTargetX = maxTargetX;
+                        if (jumpDistance < ratchetThreshold)
+                        {
+                            effectiveTargetX = maxTargetX;
+                        }
                         else
                         {
                             maxTargetX = realTargetPos.X;
@@ -171,7 +171,7 @@ namespace eep.editer1
                 }
             }
 
-            // 液体シミュレーション (1次遅れ系)
+            // 液体シミュレーション
             float followFactor = LIQUID_FOLLOW_FACTOR * deltaTime;
             if (followFactor > 1.0f) followFactor = 1.0f;
 

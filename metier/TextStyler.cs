@@ -1,36 +1,31 @@
 ﻿#nullable disable
 using System;
-using System.Collections.Generic;
 using System.Drawing;
-using System.Linq;
 using System.Windows.Forms;
 
-namespace eep.editer1
+namespace Metier
 {
-    public class TextStyler
+    public class TextStyler(RichTextBox richTextBox)
     {
-        private readonly RichTextBox _richTextBox;
+        private readonly RichTextBox _richTextBox = richTextBox;
+        private readonly ColorRepository _colorRepo = new();
+
         private long _lastShiftReleaseTime = 0;
         private long _lastSpaceReleaseTime = 0;
 
-        private readonly Dictionary<string, Color> _colorDictionary = new Dictionary<string, Color>();
-        private readonly List<string> _sortedColorKeys;
-        private readonly Dictionary<string, Func<Color, Color>> _modifiers = new Dictionary<string, Func<Color, Color>>();
-        private readonly List<(string Name, Color Color)> _standardCategories = new List<(string, Color)>();
+        // “直前に色を変えた範囲” を記憶
+        private (int Start, int Length) _lastColoredRange = (-1, 0);
 
-        private const int DOUBLE_TAP_SPEED = 600;
+        private const int DOUBLE_TAP_SPEED = 400; // 400ミリ秒
         private const string FONT_FAMILY = "Meiryo UI";
         private const float FONT_SIZE_NORMAL = 14;
         private const float FONT_SIZE_HEADING = 24;
 
-        public TextStyler(RichTextBox richTextBox)
+        // --- 公開イベントハンドラ ---
+
+        public void OnSelectionChanged()
         {
-            _richTextBox = richTextBox;
-
-            InitializeColorClassifier();
-            InitializeModifiers();
-
-            _sortedColorKeys = _colorDictionary.Keys.OrderByDescending(k => k.Length).ToList();
+            // 特殊な判定が必要ない場合は空でも可
         }
 
         public int HandleShiftKeyUp()
@@ -51,507 +46,285 @@ namespace eep.editer1
         public void HandleSpaceKeyUp()
         {
             long now = DateTime.Now.Ticks / 10000;
+            int currentPos = _richTextBox.SelectionStart;
+            if (currentPos <= 0) return;
+
+            char lastChar = _richTextBox.Text[currentPos - 1];
+
+            // --- 【全角スペース単発】 モード終了 (削除せずスタイルのみリセット) ---
+            if (lastChar == '　')
+            {
+                if (IsHeadingMode() || IsColorMode())
+                {
+                    ResetSelectionStyle();
+                    return;
+                }
+            }
+
+            // --- 【スペース2連打】 判定 ---
             if (now - _lastSpaceReleaseTime < DOUBLE_TAP_SPEED)
             {
-                int currentPos = _richTextBox.SelectionStart;
-                if (currentPos >= 2)
+                // ここで「入力されたスペース(全角含む)」を確実に消去する準備
+                // 各アクション内で RemoveTrailingSpaces を呼び出す
+
+                // 優先順位1: 直前の色変換取り消し (Undo)
+                int expectedEnd = _lastColoredRange.Start + _lastColoredRange.Length;
+
+                // ※ペンモード(Length=0)の場合もUndo対象にするため条件を調整
+                bool isUndoTarget = (_lastColoredRange.Start >= 0) &&
+                                    (currentPos >= expectedEnd && currentPos <= expectedEnd + 2);
+
+                if (isUndoTarget)
                 {
-                    _richTextBox.Select(currentPos - 2, 2);
-                    ResetSelectionStyle();
-                    _richTextBox.SelectedText = " ";
-                    ResetSelectionStyle();
+                    UndoColorChange(currentPos, expectedEnd);
+                    _lastSpaceReleaseTime = 0;
+                    return;
                 }
-                _lastSpaceReleaseTime = 0;
+
+                // 優先順位2: 見出し・色モード終了
+                if (IsHeadingMode() || IsColorMode())
+                {
+                    // 全角・半角問わずスペースを削除してリセット
+                    RemoveTrailingSpaces(currentPos);
+                    ResetSelectionStyle();
+                    _lastSpaceReleaseTime = 0;
+                    return;
+                }
+
+                // 優先順位3: カッコ抜け (脱出)
+                if (TryStepOutBrackets(currentPos))
+                {
+                    _lastSpaceReleaseTime = 0;
+                    return;
+                }
             }
             else _lastSpaceReleaseTime = now;
         }
 
-        public bool ToggleColor(bool keepTriggerWord)
+        // --- 内部判定・処理用ヘルパー ---
+
+        private bool IsHeadingMode() => (_richTextBox.SelectionFont?.Size ?? 0) >= 20;
+        private bool IsColorMode() => _richTextBox.SelectionColor.ToArgb() != Color.Black.ToArgb();
+
+        private void UndoColorChange(int currentPos, int expectedEnd)
+        {
+            // 1. 入力されたスペース（連打分）を削除
+            // currentPos はスペース入力後の位置なので、そこから expectedEnd までの差分を消す
+            int spacesToRemove = currentPos - expectedEnd;
+            if (spacesToRemove > 0)
+            {
+                _richTextBox.Select(expectedEnd, spacesToRemove);
+                _richTextBox.SelectedText = "";
+            }
+
+            // 2. 色の復元 / リセット
+            if (_lastColoredRange.Length > 0)
+            {
+                // 「範囲」につけた色を黒に戻す
+                _richTextBox.Select(_lastColoredRange.Start, _lastColoredRange.Length);
+                _richTextBox.SelectionColor = Color.Black;
+
+                // カーソルを末尾に戻し、以降も黒にする
+                _richTextBox.Select(_lastColoredRange.Start + _lastColoredRange.Length, 0);
+                _richTextBox.SelectionColor = Color.Black;
+            }
+            else
+            {
+                // 「ペンモード（行頭設定）」の取り消しの場合
+                // カーソル位置の色を黒に戻すだけ
+                _richTextBox.Select(_lastColoredRange.Start, 0);
+                _richTextBox.SelectionColor = Color.Black;
+            }
+
+            _lastColoredRange = (-1, 0);
+        }
+
+        private void RemoveTrailingSpaces(int currentPos)
+        {
+            // カーソル直前の空白を最大2文字探して消す
+            // char.IsWhiteSpace は 全角スペース('　') も true を返すため、全角も消える
+            int count = 0;
+            for (int i = 1; i <= 2; i++)
+            {
+                if (currentPos - i >= 0 && char.IsWhiteSpace(_richTextBox.Text[currentPos - i]))
+                    count = i;
+                else break;
+            }
+            if (count > 0)
+            {
+                _richTextBox.Select(currentPos - count, count);
+                _richTextBox.SelectedText = "";
+            }
+        }
+
+        private bool TryStepOutBrackets(int currentPos)
+        {
+            if (currentPos >= _richTextBox.TextLength) return false;
+            char nextChar = _richTextBox.Text[currentPos];
+
+            string closingBrackets = "」』）)}]”";
+
+            if (closingBrackets.Contains(nextChar))
+            {
+                // 全角スペースなどが混ざっていても削除
+                RemoveTrailingSpaces(currentPos);
+
+                int newPos = _richTextBox.SelectionStart;
+                _richTextBox.Select(newPos + 1, 0);
+                return true;
+            }
+            return false;
+        }
+
+        // --- 色適用ロジック ---
+
+        public bool ApplyColorLogic(bool keepTriggerWord)
         {
             int caretPos = _richTextBox.SelectionStart;
             if (caretPos == 0) return false;
 
-            // 1. まずキーワード検索を試みる
             int searchStart = GetTriggerChunkStart(caretPos);
-            string chunkText = _richTextBox.Text.Substring(searchStart, caretPos - searchStart);
+            // 行頭の場合 searchStart == caretPos になる可能性があるため条件緩和
+            if (searchStart < 0) return false;
 
+            string chunkText = _richTextBox.Text[searchStart..caretPos];
             string matchedKey = null;
             string matchedInput = null;
 
-            foreach (var key in _sortedColorKeys)
+            foreach (var key in _colorRepo.SortedKeys)
             {
-                if (chunkText.EndsWith(key))
-                {
-                    matchedKey = key;
-                    matchedInput = key;
-                    break;
-                }
-                if (chunkText.EndsWith(key + "色"))
-                {
-                    matchedKey = key;
-                    matchedInput = key + "色";
-                    break;
-                }
+                if (chunkText.EndsWith(key)) { matchedKey = key; matchedInput = key; break; }
+                if (chunkText.EndsWith(key + "色")) { matchedKey = key; matchedInput = key + "色"; break; }
             }
 
-            // A. キーワードが見つかった場合 -> 指定色を強制適用（トグルなし）
             if (matchedKey != null)
             {
-                string prefix = chunkText.Substring(0, chunkText.Length - matchedInput.Length);
-                Color baseColor = GetBaseColorFromKey(matchedKey);
-                Color finalColor = ApplyModifier(baseColor, prefix, out int modLength);
+                string prefix = chunkText[..^matchedInput.Length];
+                Color baseColor = _colorRepo.GetBaseColor(matchedKey);
+                Color finalColor = _colorRepo.ApplyModifier(baseColor, prefix, out int modLength);
+                if (modLength > 0) matchedInput = string.Concat(prefix.AsSpan(prefix.Length - modLength), matchedInput);
 
-                if (modLength > 0)
-                {
-                    matchedInput = prefix.Substring(prefix.Length - modLength) + matchedInput;
-                }
-
-                Color targetColor;
-                if (modLength > 0)
-                {
-                    targetColor = finalColor;
-                }
-                else
-                {
-                    targetColor = IdentifyCategoryColor(matchedKey);
-                }
-
-                ApplyColorLogic(caretPos, matchedInput, targetColor, keepTriggerWord);
+                Color targetColor = (modLength > 0) ? finalColor : _colorRepo.GetClosestCategoryColor(matchedKey);
+                ApplyColorToSelection(caretPos, matchedInput, targetColor, keepTriggerWord);
                 return true;
             }
-
-            // B. キーワードがない場合 -> 「直前の文字の色」をチェックして、黒以外ならリセットする
-            // これが「解除」の専用操作になる
-            if (caretPos > 0)
-            {
-                _richTextBox.Select(caretPos - 1, 1);
-                Color prevColor = _richTextBox.SelectionColor;
-                _richTextBox.Select(caretPos, 0);
-
-                if (prevColor.ToArgb() != Color.Black.ToArgb())
-                {
-                    int rangeStart = GetColorRangeStart(caretPos);
-                    int modifyLength = caretPos - rangeStart;
-
-                    if (modifyLength > 0)
-                    {
-                        _richTextBox.Select(rangeStart, modifyLength);
-                        _richTextBox.SelectionColor = Color.Black;
-
-                        _richTextBox.Select(caretPos, 0);
-                        _richTextBox.SelectionColor = Color.Black;
-
-                        return true;
-                    }
-                }
-            }
-
             return false;
         }
 
-        // 修正箇所：トグルロジックを廃止し、常に targetColor を適用するように変更
-        private void ApplyColorLogic(int caretPos, string matchedInput, Color targetColor, bool keepTriggerWord)
+        private void ApplyColorToSelection(int caretPos, string matchedInput, Color targetColor, bool keepTriggerWord)
         {
             int keywordStartPos = caretPos - matchedInput.Length;
-            bool isPatternB = (keywordStartPos == 0) || char.IsWhiteSpace(_richTextBox.Text[keywordStartPos - 1]);
+            if (keywordStartPos < 0) keywordStartPos = 0;
 
-            if (isPatternB)
+            // 1. トリガーワード（「赤」など）を削除
+            if (!keepTriggerWord)
             {
-                // 【Pattern B】書き始めモード
-                if (!keepTriggerWord)
-                {
-                    _richTextBox.Select(keywordStartPos, matchedInput.Length);
-                    _richTextBox.SelectedText = "";
-                }
+                _richTextBox.Select(keywordStartPos, matchedInput.Length);
+                _richTextBox.SelectedText = "";
+            }
 
-                // ★変更: トグル判定を削除し、強制的に色を適用
+            // 2. 色を適用する範囲を決定
+            int rangeStart = GetColorRangeStart(keywordStartPos);
+            int modifyLength = keywordStartPos - rangeStart;
+
+            if (modifyLength > 0)
+            {
+                // 【通常モード】前の文字がある場合：その範囲の色を変える
+                _richTextBox.Select(rangeStart, modifyLength);
                 _richTextBox.SelectionColor = targetColor;
+
+                _lastColoredRange = (rangeStart, modifyLength);
+
+                // カーソル位置の色指定はリセットしない（続きを黒にするかはEnter等の責務）
+                // ただし、範囲外に出たときに色が漏れないよう念のため末尾を選択
+                int resetPos = keepTriggerWord ? (keywordStartPos + matchedInput.Length) : keywordStartPos;
+                _richTextBox.Select(Math.Min(resetPos, _richTextBox.TextLength), 0);
             }
             else
             {
-                // 【Pattern A】直前の文を塗るモード
-                int rangeStart = GetColorRangeStart(keywordStartPos);
-                int modifyLength = keywordStartPos - rangeStart;
+                // 【ペンモード】前の文字がない（行頭など）：これから書く文字の色を変える
+                _richTextBox.Select(keywordStartPos, 0); // 削除後の位置
+                _richTextBox.SelectionColor = targetColor;
 
-                if (!keepTriggerWord)
-                {
-                    _richTextBox.Select(keywordStartPos, matchedInput.Length);
-                    _richTextBox.SelectedText = "";
-                }
-
-                if (modifyLength > 0)
-                {
-                    _richTextBox.Select(rangeStart, modifyLength);
-
-                    // ★変更: トグル判定を削除し、強制的に色を適用
-                    _richTextBox.SelectionColor = targetColor;
-
-                    _richTextBox.Select(rangeStart + modifyLength, 0);
-                    _richTextBox.SelectionColor = Color.Black;
-                }
+                // Undo用に記録（長さ0 = ペンモードの印）
+                _lastColoredRange = (keywordStartPos, 0);
             }
 
             _richTextBox.Focus();
         }
+
+        // --- フォント・リセット操作 ---
 
         private int ApplyHeadingLogic()
         {
             int caretPos = _richTextBox.SelectionStart;
-            bool isAfterCharacter = caretPos > 0 && !char.IsWhiteSpace(_richTextBox.Text[caretPos - 1]);
+            bool isAfterChar = (caretPos > 0) && !char.IsWhiteSpace(_richTextBox.Text[caretPos - 1]);
             int resultHeight = 0;
 
-            if (isAfterCharacter)
+            if (isAfterChar)
             {
                 int startPos = GetTriggerChunkStart(caretPos);
                 int length = caretPos - startPos;
-
-                _richTextBox.Select(startPos, length);
-                Font newFont = ToggleCurrentSelectionFont();
-                if (newFont.Size >= 20) resultHeight = newFont.Height;
-
-                _richTextBox.Select(caretPos, 0);
-                _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
+                if (length > 0)
+                {
+                    _richTextBox.Select(startPos, length);
+                    ToggleCurrentSelectionFont();
+                    if (_richTextBox.SelectionFont.Size >= 20) resultHeight = _richTextBox.SelectionFont.Height;
+                    _richTextBox.Select(caretPos, 0);
+                    _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
+                }
             }
             else
             {
-                Font newFont = ToggleCurrentSelectionFont();
-                resultHeight = newFont.Height;
+                ToggleCurrentSelectionFont();
+                resultHeight = _richTextBox.SelectionFont.Height;
             }
-            _richTextBox.Focus();
             return resultHeight;
         }
 
-        private Font ToggleCurrentSelectionFont()
+        private void ToggleCurrentSelectionFont()
         {
-            Font currentFont = _richTextBox.SelectionFont;
-            bool isHeading = (currentFont != null && currentFont.Size >= 20);
-            Font newFont = isHeading ? new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular)
-                                     : new Font(FONT_FAMILY, FONT_SIZE_HEADING, FontStyle.Bold);
-            _richTextBox.SelectionFont = newFont;
-            return newFont;
+            Font currentFont = _richTextBox.SelectionFont ?? _richTextBox.Font;
+            bool isHeading = (currentFont.Size >= 20);
+            _richTextBox.SelectionFont = isHeading
+                ? new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular)
+                : new Font(FONT_FAMILY, FONT_SIZE_HEADING, FontStyle.Bold);
         }
 
         public void ResetToNormalFont()
         {
-            Font currentFont = _richTextBox.SelectionFont;
-            if (currentFont != null && currentFont.Size >= 20)
-            {
-                _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
-            }
+            _richTextBox.SelectionFont = new Font(FONT_FAMILY, FONT_SIZE_NORMAL, FontStyle.Regular);
         }
 
-        public void ResetColorToBlack() => _richTextBox.SelectionColor = Color.Black;
-
-        private void ResetSelectionStyle()
+        public void ResetColorToBlack()
         {
-            ResetColorToBlack();
+            _richTextBox.SelectionColor = Color.Black;
+            _lastColoredRange = (-1, 0);
+        }
+
+        public void ResetSelectionStyle()
+        {
             ResetToNormalFont();
-        }
-
-        private Color GetBaseColorFromKey(string key)
-        {
-            if (_colorDictionary.TryGetValue(key, out Color c)) return c;
-            return Color.Black;
-        }
-
-        private string NormalizeInput(string input)
-        {
-            if (string.IsNullOrEmpty(input)) return "";
-            return input.EndsWith("色") ? input.Substring(0, input.Length - 1) : input;
-        }
-
-        private Color IdentifyCategoryColor(string inputWord)
-        {
-            string key = NormalizeInput(inputWord);
-
-            if (!_colorDictionary.TryGetValue(key, out Color hitColor))
-            {
-                if (!_colorDictionary.TryGetValue(inputWord, out hitColor)) return Color.Black;
-            }
-
-            float h1 = hitColor.GetHue();
-            float s1 = hitColor.GetSaturation();
-            float b1 = hitColor.GetBrightness();
-
-            Color bestColor = Color.Black;
-            double minDistance = double.MaxValue;
-
-            foreach (var cat in _standardCategories)
-            {
-                float h2 = cat.Color.GetHue();
-                float s2 = cat.Color.GetSaturation();
-                float b2 = cat.Color.GetBrightness();
-
-                float dh = Math.Abs(h1 - h2);
-                if (dh > 180) dh = 360 - dh;
-                float normalizedDh = dh / 180.0f;
-
-                float hueWeight = (s1 < 0.15f || s2 < 0.15f) ? 0.0f : 1.5f;
-
-                double dist = Math.Pow(normalizedDh * hueWeight, 2) +
-                              Math.Pow(s1 - s2, 2) +
-                              Math.Pow(b1 - b2, 2);
-
-                if (dist < minDistance)
-                {
-                    minDistance = dist;
-                    bestColor = cat.Color;
-                }
-            }
-            return bestColor;
+            ResetColorToBlack();
         }
 
         private int GetTriggerChunkStart(int caretPos)
         {
             int limit = Math.Max(0, caretPos - 50);
-            int startPos = limit;
-
             for (int i = caretPos - 1; i >= limit; i--)
-            {
-                if (char.IsWhiteSpace(_richTextBox.Text[i]))
-                {
-                    startPos = i + 1;
-                    break;
-                }
-            }
-            return startPos;
+                if (char.IsWhiteSpace(_richTextBox.Text[i])) return i + 1;
+            return limit;
         }
 
         private int GetColorRangeStart(int keywordStartPos)
         {
-            int startPos = keywordStartPos;
-            bool encounteredPunctuationAtEnd = false;
             int limit = Math.Max(0, keywordStartPos - 200);
-
             for (int i = keywordStartPos - 1; i >= limit; i--)
             {
                 char c = _richTextBox.Text[i];
-
-                if (char.IsWhiteSpace(c))
-                {
-                    startPos = i + 1;
-                    break;
-                }
-
-                if (c == '。' || c == '、' || c == '.' || c == ',' ||
-                    c == '？' || c == '?' || c == '！' || c == '!')
-                {
-                    if (i == keywordStartPos - 1)
-                    {
-                        encounteredPunctuationAtEnd = true;
-                        continue;
-                    }
-                    if (encounteredPunctuationAtEnd)
-                    {
-                        startPos = i + 1;
-                        break;
-                    }
-                    startPos = i + 1;
-                    break;
-                }
-                if (i == 0) startPos = 0;
+                if (char.IsWhiteSpace(c) || "。、.,？！?!".Contains(c)) return i + 1;
             }
-            return startPos;
+            return limit;
         }
-
-        private void InitializeModifiers()
-        {
-            Func<Color, Color> lighter = c => ControlPaint.Light(c, 0.6f);
-            Func<Color, Color> darker = c => ControlPaint.Dark(c, 0.3f);
-            Func<Color, Color> pastel = c => ControlPaint.Light(c, 0.3f);
-
-            void AddMod(string[] words, Func<Color, Color> func)
-            {
-                foreach (var w in words) _modifiers[w] = func;
-            }
-
-            AddMod(new[] { "薄い", "うすい", "淡い", "あわい", "ライトな" }, lighter);
-            AddMod(new[] { "暗い", "くらい", "濃い", "こい", "ダークな" }, darker);
-            AddMod(new[] { "パステル", "ぱすてる", "明るい", "あかるい" }, pastel);
-        }
-
-        private Color ApplyModifier(Color baseColor, string textBeforeColor, out int modifierLength)
-        {
-            modifierLength = 0;
-            foreach (var mod in _modifiers)
-            {
-                if (textBeforeColor.EndsWith(mod.Key))
-                {
-                    modifierLength = mod.Key.Length;
-                    return mod.Value(baseColor);
-                }
-            }
-            return baseColor;
-        }
-
-        #region Color Definitions
-
-        private void InitializeColorClassifier()
-        {
-            void AddColor(string[] names, int r, int g, int b)
-            {
-                Color c = Color.FromArgb(r, g, b);
-                foreach (var name in names) _colorDictionary[name] = c;
-            }
-            void Add(string name, int r, int g, int b) => _colorDictionary[name] = Color.FromArgb(r, g, b);
-
-            _standardCategories.Clear();
-
-            _standardCategories.Add(("BLACK", Color.Black));
-            _standardCategories.Add(("DIM_GRAY", Color.DimGray));
-            _standardCategories.Add(("GRAY", Color.Gray));
-            _standardCategories.Add(("SILVER", Color.Silver));
-            _standardCategories.Add(("WHITE", Color.White));
-            _standardCategories.Add(("RED", Color.Red));
-            _standardCategories.Add(("MAROON", Color.Maroon));
-            _standardCategories.Add(("CRIMSON", Color.Crimson));
-            _standardCategories.Add(("SALMON", Color.Salmon));
-            _standardCategories.Add(("PINK", Color.HotPink));
-            _standardCategories.Add(("LIGHT_PINK", Color.Pink));
-            _standardCategories.Add(("MAGENTA", Color.Magenta));
-            _standardCategories.Add(("PURPLE", Color.Purple));
-            _standardCategories.Add(("INDIGO", Color.Indigo));
-            _standardCategories.Add(("LAVENDER", Color.Lavender));
-            _standardCategories.Add(("BLUE", Color.Blue));
-            _standardCategories.Add(("NAVY", Color.Navy));
-            _standardCategories.Add(("ROYAL_BLUE", Color.RoyalBlue));
-            _standardCategories.Add(("SKY_BLUE", Color.DeepSkyBlue));
-            _standardCategories.Add(("CYAN", Color.Cyan));
-            _standardCategories.Add(("TEAL", Color.Teal));
-            _standardCategories.Add(("GREEN", Color.Green));
-            _standardCategories.Add(("DARK_GREEN", Color.DarkGreen));
-            _standardCategories.Add(("LIME", Color.Lime));
-            _standardCategories.Add(("OLIVE", Color.Olive));
-            _standardCategories.Add(("YELLOW", Color.Gold));
-            _standardCategories.Add(("ORANGE", Color.Orange));
-            _standardCategories.Add(("BROWN", Color.SaddleBrown));
-            _standardCategories.Add(("BEIGE", Color.Beige));
-            _standardCategories.Add(("YELLOW_GREEN", Color.YellowGreen));
-            _standardCategories.Add(("LAWN_GREEN", Color.LawnGreen));
-            _standardCategories.Add(("CREAM", Color.LemonChiffon));
-            _standardCategories.Add(("GOLDENROD", Color.Goldenrod));
-            _standardCategories.Add(("CHOCOLATE", Color.Chocolate));
-
-            // 赤・ピンク系
-            AddColor(new[] { "赤", "あか", "アカ", "RED", "red" }, 255, 0, 0);
-            AddColor(new[] { "紅", "べに", "ベニ", "クリムゾン", "くりむぞん" }, 220, 20, 60);
-            AddColor(new[] { "朱", "しゅ", "あけ", "バーミリオン", "ばーみりおん" }, 235, 97, 1);
-            AddColor(new[] { "茜", "あかね" }, 167, 53, 62);
-            AddColor(new[] { "金赤", "きんあか" }, 234, 85, 80);
-            AddColor(new[] { "エンジ", "えんじ", "臙脂" }, 100, 0, 0);
-            AddColor(new[] { "緋", "ひ", "あけ", "スカーレット", "すかーれっと" }, 255, 36, 0);
-            AddColor(new[] { "桃", "もも", "ピーチ", "ぴーち", "PINK", "pink", "ぴんく" }, 255, 192, 203);
-            AddColor(new[] { "桜", "さくら", "サクラ" }, 254, 223, 225);
-            AddColor(new[] { "薔薇", "ばら", "ローズ", "ろーず" }, 255, 0, 127);
-            AddColor(new[] { "珊瑚", "さんご", "コーラル", "こーらる" }, 255, 127, 80);
-            AddColor(new[] { "サーモンピンク", "さーもんぴんく" }, 255, 145, 164);
-            AddColor(new[] { "撫子", "なでしこ" }, 238, 187, 204);
-            AddColor(new[] { "マゼンタ", "まぜんた", "MAGENTA" }, 255, 0, 255);
-            AddColor(new[] { "牡丹", "ぼたん" }, 211, 47, 127);
-            AddColor(new[] { "つつじ" }, 233, 82, 149);
-
-            // 橙・茶系
-            AddColor(new[] { "橙", "だいだい", "オレンジ", "おれんじ", "ORANGE", "orange" }, 255, 165, 0);
-            AddColor(new[] { "柿", "かき" }, 237, 109, 53);
-            AddColor(new[] { "杏", "あんず", "アプリコット", "あぷりこっと" }, 247, 185, 119);
-            AddColor(new[] { "蜜柑", "みかん", "マンダリン", "まんだりん" }, 245, 130, 32);
-            AddColor(new[] { "茶", "ちゃ", "ブラウン", "ぶらうん", "BROWN", "brown" }, 165, 42, 42);
-            AddColor(new[] { "焦茶", "こげちゃ" }, 107, 68, 35);
-            AddColor(new[] { "栗", "くり", "マロン", "まろん" }, 118, 47, 7);
-            AddColor(new[] { "チョコレート", "ちょこれーと", "チョコ", "ちょこ" }, 58, 36, 33);
-            AddColor(new[] { "コーヒー", "こーひー" }, 75, 54, 33);
-            AddColor(new[] { "駱駝", "らくだ", "キャメル", "きゃめる" }, 193, 154, 107);
-            AddColor(new[] { "ベージュ", "べーじゅ", "肌", "はだ" }, 245, 245, 220);
-            AddColor(new[] { "黄土", "おうど", "オーカー", "おーかー" }, 195, 145, 67);
-            AddColor(new[] { "琥珀", "こはく", "アンバー", "あんばー" }, 255, 191, 0);
-            AddColor(new[] { "セピア", "せぴあ" }, 112, 66, 20);
-            AddColor(new[] { "煉瓦", "れんが", "レンガ", "ブリック", "ぶりっく" }, 181, 82, 47);
-            AddColor(new[] { "鳶", "とび" }, 149, 72, 63);
-
-            // 黄・金系
-            AddColor(new[] { "黄", "き", "イエロー", "いえろー", "YELLOW", "yellow" }, 255, 255, 0);
-            AddColor(new[] { "山吹", "やまぶき" }, 248, 181, 0);
-            AddColor(new[] { "金", "きん", "ゴールド", "ごーるど", "GOLD" }, 255, 215, 0);
-            AddColor(new[] { "レモン", "れもん" }, 255, 243, 82);
-            AddColor(new[] { "クリーム", "くりーむ" }, 255, 253, 208);
-            AddColor(new[] { "象牙", "ぞうげ", "アイボリー", "あいぼりー" }, 255, 255, 240);
-            AddColor(new[] { "向日葵", "ひまわり" }, 255, 219, 0);
-            AddColor(new[] { "芥子", "からし", "マスタード", "ますたーど" }, 208, 176, 54);
-            AddColor(new[] { "ウコン", "うこん", "ターメリック", "たーめりっく" }, 250, 186, 12);
-            AddColor(new[] { "カナリア", "かなりあ" }, 229, 216, 92);
-
-            // 緑・黄緑系
-            AddColor(new[] { "緑", "みどり", "グリーン", "ぐりーん", "GREEN", "green" }, 0, 128, 0);
-            AddColor(new[] { "黄緑", "きみどり", "ライム", "らいむ" }, 50, 205, 50);
-            AddColor(new[] { "深緑", "ふかみどり" }, 0, 85, 46);
-            AddColor(new[] { "抹茶", "まっちゃ" }, 197, 197, 106);
-            AddColor(new[] { "鶯", "うぐいす" }, 146, 139, 58);
-            AddColor(new[] { "若草", "わかくさ" }, 195, 216, 37);
-            AddColor(new[] { "萌黄", "もえぎ" }, 167, 189, 0);
-            AddColor(new[] { "苔", "こけ", "モスグリーン", "もすぐりーん" }, 119, 150, 86);
-            AddColor(new[] { "オリーブ", "おりーぶ" }, 128, 128, 0);
-            AddColor(new[] { "エメラルド", "えめらるど" }, 80, 200, 120);
-            AddColor(new[] { "翡翠", "ひすい", "ジェイド", "じぇいど" }, 56, 176, 137);
-            AddColor(new[] { "常盤", "ときわ" }, 0, 123, 67);
-            AddColor(new[] { "ビリジアン", "びりじあん" }, 0, 125, 101);
-            AddColor(new[] { "フォレスト", "ふぉれすと" }, 34, 139, 34);
-            AddColor(new[] { "ミント", "みんと" }, 189, 252, 201);
-            AddColor(new[] { "海松", "みる" }, 114, 109, 66);
-            AddColor(new[] { "青磁", "せいじ" }, 126, 190, 171);
-
-            // 青・水色系
-            AddColor(new[] { "青", "あお", "アオ", "ブルー", "ぶるー", "BLUE", "blue" }, 0, 0, 255);
-            AddColor(new[] { "水", "みず", "ライトブルー", "らいとぶるー" }, 173, 216, 230);
-            AddColor(new[] { "シアン", "しあん", "CYAN" }, 0, 255, 255);
-            AddColor(new[] { "空", "そら", "スカイブルー", "すかいぶるー" }, 135, 206, 235);
-            AddColor(new[] { "紺", "こん", "ネイビー", "ねいびー", "NAVY" }, 0, 0, 128);
-            AddColor(new[] { "藍", "あい", "インディゴ", "いんでぃご" }, 75, 0, 130);
-            AddColor(new[] { "群青", "ぐんじょう", "ウルトラマリン", "うるとらまりん" }, 70, 70, 175);
-            AddColor(new[] { "瑠璃", "るり", "ラピスラズリ", "らぴすらずり" }, 31, 71, 136);
-            AddColor(new[] { "浅葱", "あさぎ" }, 0, 163, 175);
-            AddColor(new[] { "新橋", "しんばし" }, 89, 185, 198);
-            AddColor(new[] { "ターコイズ", "たーこいず", "トルコ石", "とるこいし" }, 64, 224, 208);
-            AddColor(new[] { "アクアマリン", "あくあまりん" }, 127, 255, 212);
-            AddColor(new[] { "ロイヤルブルー", "ろいやるぶるー" }, 65, 105, 225);
-            AddColor(new[] { "ミッドナイトブルー", "みっどないとぶるー" }, 25, 25, 112);
-            AddColor(new[] { "サックス", "さっくす" }, 75, 144, 194);
-            AddColor(new[] { "鉄紺", "てつこん" }, 23, 27, 38);
-
-            // 紫・菫系
-            AddColor(new[] { "紫", "むらさき", "パープル", "ぱーぷる", "PURPLE", "purple" }, 128, 0, 128);
-            AddColor(new[] { "菫", "すみれ", "バイオレット", "ばいおれっと" }, 238, 130, 238);
-            AddColor(new[] { "藤", "ふじ", "ウィステリア", "うぃすてりあ" }, 187, 188, 222);
-            AddColor(new[] { "菖蒲", "あやめ", "アイリス", "あいりす" }, 204, 125, 182);
-            AddColor(new[] { "桔梗", "ききょう" }, 104, 72, 169);
-            AddColor(new[] { "ラベンダー", "らべんだー" }, 230, 230, 250);
-            AddColor(new[] { "ライラック", "らいらっく" }, 200, 162, 200);
-            AddColor(new[] { "江戸紫", "えどむらさき" }, 116, 83, 153);
-            AddColor(new[] { "古代紫", "こだいむらさき" }, 137, 91, 138);
-            AddColor(new[] { "京紫", "きょうむらさき" }, 157, 94, 135);
-            AddColor(new[] { "葡萄", "ぶどう", "グレープ", "ぐれーぷ" }, 106, 75, 106);
-            AddColor(new[] { "オーキッド", "おーきっど", "蘭", "らん" }, 218, 112, 214);
-            AddColor(new[] { "プラム", "ぷらむ" }, 221, 160, 221);
-
-            // 白・黒・灰系
-            AddColor(new[] { "白", "しろ", "ホワイト", "ほわいと", "WHITE", "white" }, 255, 255, 255);
-            AddColor(new[] { "黒", "くろ", "ブラック", "ぶらっく", "BLACK", "black" }, 0, 0, 0);
-            AddColor(new[] { "灰", "はい", "グレー", "ぐれー", "グレイ", "ぐれい", "GRAY", "gray" }, 128, 128, 128);
-            AddColor(new[] { "鼠", "ねずみ", "マウスグレー", "まうすぐれー" }, 148, 148, 148);
-            AddColor(new[] { "銀", "ぎん", "シルバー", "しるばー", "SILVER" }, 192, 192, 192);
-            AddColor(new[] { "墨", "すみ" }, 89, 88, 87);
-            AddColor(new[] { "鉛", "なまり" }, 119, 120, 123);
-            AddColor(new[] { "木炭", "もくたん", "チャコール", "ちゃこーる" }, 54, 69, 79);
-            AddColor(new[] { "スレート", "すれーと" }, 112, 128, 144);
-            AddColor(new[] { "利休鼠", "りきゅうねずみ" }, 136, 142, 126);
-            AddColor(new[] { "深川鼠", "ふかがわねずみ" }, 133, 169, 174);
-            AddColor(new[] { "鳩羽鼠", "はとばねずみ" }, 158, 143, 150);
-
-            // その他
-            AddColor(new[] { "虹", "にじ", "レインボー", "れいんぼー" }, 255, 255, 255);
-            Add("透明", 255, 255, 255);
-            Add("とうめい", 255, 255, 255);
-        }
-
-        #endregion
     }
 }
